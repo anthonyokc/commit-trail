@@ -83,11 +83,6 @@ To upgrade, run `brew update`, then run `brew upgrade commit-trail`.
 
 Homebrew builds commit-trail from source. The formula downloads a pinned Bun release for the build and does not install a Bun formula, so it works with any existing Bun installation. It installs `gh` as a runtime dependency.
 
-Note: while the GitHub repository is private, Homebrew must authenticate to GitHub to clone it. Use one of these methods:
-
-- Run `gh auth setup-git`. Git then uses your `gh` credentials for HTTPS clones.
-- Tap with the SSH URL: `brew tap anthonyokc/commit-trail git@github.com:anthonyokc/commit-trail.git`. The formula still downloads the source over HTTPS, so the first method is also necessary.
-
 ### Install from source
 
 1. Clone the repository and install the dependencies:
@@ -170,7 +165,7 @@ The full diff view (`Enter`) uses one of two renderers:
 - delta: commit-trail sends the patch to `delta --paging=never` at the panel's width and shows delta's colored output in the panel. delta reads its settings from your Git config, so options such as `side-by-side`, `line-numbers`, and `features` apply. `h`/`l` and scrolling keep working.
 - built-in: commit-trail colors the unified diff itself.
 
-If delta is installed, commit-trail uses delta. Press `t` to switch renderers while commit-trail runs, or start it with `--diff builtin`. If delta exits with an error, commit-trail shows the built-in diff and the error in the footer.
+By default (`auto`), commit-trail uses delta if delta is installed. To choose a renderer, set `diff` in the config file or start commit-trail with `--diff`. Press `t` to switch renderers while commit-trail runs. If delta exits with an error, commit-trail shows the built-in diff and the error in the footer.
 
 The `D` key suspends commit-trail and opens the selected diff in a pager. commit-trail resumes when you quit the pager.
 
@@ -213,7 +208,24 @@ A report never claims that a later change resolves a review concern. It shows th
 | `--copy` | `report` only: copy the Markdown report to the clipboard |
 | `--max-diff-lines <n>` | Show at most `n` diff lines for each patch in a report. The default is 60 |
 | `--report-dir <path>` | Write reports from the `r` and `R` keys to `<path>` |
-| `--diff <renderer>` | Renderer for the full diff view: `auto`, `delta`, or `builtin`. The default `auto` uses delta if it is on `PATH`. `delta` stops with an error if delta is not on `PATH` |
+| `--diff <renderer>` | Renderer for the full diff view and the `D` key: `auto`, `delta`, or `builtin`. This option overrides the config file. `auto` uses delta if it is on `PATH`. `delta` stops with an error if delta is not on `PATH` |
+| `--config <path>` | Read settings from `<path>` instead of the default config file |
+
+### Configuration
+
+commit-trail reads settings from `$XDG_CONFIG_HOME/commit-trail/config.toml`. If `XDG_CONFIG_HOME` is not set, the path is `~/.config/commit-trail/config.toml`. If the file does not exist, commit-trail uses the defaults.
+
+```toml
+# Renderer for the full diff view and the D key: "auto", "delta", or "builtin".
+# "auto" uses delta if it is on PATH. "delta" stops with an error if it is not.
+diff = "delta"
+```
+
+| Setting | Values | Default |
+|---|---|---|
+| `diff` | `"auto"`, `"delta"`, `"builtin"` | `"auto"` |
+
+A command-line option overrides the matching setting. An unknown setting or an invalid value stops commit-trail with an error that names the file.
 
 ## How commit-trail builds the history
 
@@ -269,13 +281,13 @@ bun run start -- 1  # run from source, with arguments after --
 
 ### Release a new version for Homebrew
 
-1. Update `version` in `package.json`.
+1. Choose the next version with [semantic versioning](https://semver.org): increase the patch number for a fix, the minor number for a new feature, and the major number for an incompatible change. Update `version` in `package.json`.
 2. Update the `tag` and `version` values in `Formula/commit-trail.rb`. To change the Bun version that builds the release, update the four Bun `url` and `sha256` pairs from the Bun release's `SHASUMS256.txt` file.
 3. Commit the changes, then create and push the tag:
 
    ```bash
-   git tag v0.2.0
-   git push origin main v0.2.0
+   git tag v0.3.0
+   git push origin main v0.3.0
    ```
 
 4. Test the formula:
