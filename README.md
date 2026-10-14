@@ -8,22 +8,41 @@ commit-trail is a terminal application that follows each file's changes across a
 The file is the main unit of navigation. You select a file, step through the commits that changed it, and read each diff with its PR. commit-trail complements [tuicr](https://github.com/agavra/tuicr): commit-trail shows the history, and tuicr writes and submits review comments.
 
 ```text
- commit-trail  owner/repo  Branch: main
- PRs: #1–#12  9 files  Timeline: commits  Focus: #1
-┌─ FILES ───────────────────┐┌─ FILE HISTORY ─────────────────────────────────────┐
-│ R/process/                ││ R/process/clean_defendants.R  3 changes in 3 PRs   │
-│ › clean_defendants.R   3  ││                                                    │
-│   clean_bookings.R     2  ││   ◉ #1 ──── ● #4 ──── ● #10                        │
-│                           ││                                                    │
-│                           ││ ›  1  #1   a83c241  Added     +12 -0  add coverage │
-│                           ││    2  #4   b12f9e0  Modified  +1 -1   count cases  │
-└───────────────────────────┘└────────────────────────────────────────────────────┘
-┌─ SELECTED CHANGE ──────────────────────────────────────────────────────────────┐
-│ PR #1: feat(pipeline): add coverage checks  open  @author                      │
-│ Commit: a83c241  add coverage                                                  │
-│ Later changes:   #4 b12f9e0, #10 c51d0aa                                       │
-└────────────────────────────────────────────────────────────────────────────────┘
+ commit-trail  example/web-service  Branch: main
+ PRs: #1, #4, #10  2 files  Timeline: commits  Focus: #1  Files: focus PR (a: all)
+┌─ FILES ────────────────────┐┌─ FILE HISTORY ─────────────────────────────────────────────────┐
+│ src/api/                   ││ src/lib/cache.ts  3 changes in 3 PRs                           │
+│   rate_limit.ts         1  ││                                                                │
+│ src/lib/                   ││   ● #1 ──◉ #4 ──● #10                                          │
+│ › cache.ts              3  ││                                                                │
+│                            ││    1  #1    6c529ec  Modified  +1 -1  add per-route rate limi… │
+│                            ││ ›  2  #4    3d00576  Modified  +1 -1  read cache TTL from con… │
+│                            ││    3  #10   d618483  Modified  +1 -1  split cache eviction in… │
+│                            ││                                                                │
+│                            ││                                                                │
+│                            ││                                                                │
+│                            ││                                                                │
+│                            ││                                                                │
+└────────────────────────────┘└────────────────────────────────────────────────────────────────┘
+┌─ SELECTED CHANGE ────────────────────────────────────────────────────────────────────────────┐
+│ PR #4: fix(cache): read the TTL from config  open  @author                                   │
+│ Commit: 3d00576  read cache TTL from config  2026-10-14                                      │
+│ File: src/lib/cache.ts  Modified, +1 -1                                                      │
+│ Hunk context: import { config } from "../config";                                            │
+│ Revises: replaces 1 line(s) from #1 6c529ec                                                  │
+│ Earlier changes: #1 6c529ec                                                                  │
+│ Later changes:   #10 d618483                                                                 │
+│                                                                                              │
+│ @@ -3,7 +3,7 @@ import { config } from "../config";                                          │
+│  export function ttlFor(key: string): number {                                               │
+│ -  return 60;                                                                                │
+│ +  return config.cacheTtl;                                                                   │
+│ … 1 more line. Press Enter for the full diff.                                                │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+ j/k Files  h/l Timeline  Enter Diff  p PR/commit  o tuicr  / Search  r Report  y Copy  ? Help …
 ```
+
+In this example, PR #4 replaces a line that PR #1 introduced in `src/lib/cache.ts`. PR #10 changes the same file later.
 
 ## Requirements
 
@@ -31,6 +50,7 @@ The file is the main unit of navigation. You select a file, step through the com
 - Git 2.29 or later.
 - The [GitHub CLI](https://cli.github.com) (`gh`), signed in with `gh auth login`.
 - Optional: [tuicr](https://github.com/agavra/tuicr), for the `o` and `O` keys.
+- Optional: [delta](https://github.com/dandavison/delta), for diffs rendered by delta (`brew install git-delta`).
 - For a source installation only: [Bun](https://bun.sh) 1.3 or later.
 
 ## Installation
@@ -121,6 +141,8 @@ With one PR number, commit-trail runs in focus mode. The file list shows only th
 | `j` / `k` | Select the next or previous file |
 | `h` / `l` | Move backward or forward through the selected file's changes |
 | `Enter` | Show the full diff of the selected change |
+| `t` | In the diff view, switch between delta and the built-in diff renderer |
+| `D` | Open the selected diff in a pager: delta in delta mode, Git's pager in built-in mode |
 | `Esc` | Return to the file history, or clear the search |
 | `p` | Switch between the commit timeline and the PR timeline |
 | `a` | In focus mode, switch between the focus PR's files and all files |
@@ -138,6 +160,24 @@ The timeline contains only the commits that change the selected file. If a file 
 Changes on separate branches appear in separate lanes. Git defines no order between lanes, so the "Parallel" line lists those changes separately from earlier and later changes.
 
 The `r` and `R` keys write reports to the system temporary directory, in `commit-trail/`. To use a different directory, start commit-trail with `--report-dir <path>`.
+
+### Diffs and delta
+
+The selected change panel always shows a short built-in preview: hunk headers, changed lines, and one unchanged line on each side.
+
+The full diff view (`Enter`) uses one of two renderers:
+
+- delta: commit-trail sends the patch to `delta --paging=never` at the panel's width and shows delta's colored output in the panel. delta reads its settings from your Git config, so options such as `side-by-side`, `line-numbers`, and `features` apply. `h`/`l` and scrolling keep working.
+- built-in: commit-trail colors the unified diff itself.
+
+If delta is installed, commit-trail uses delta. Press `t` to switch renderers while commit-trail runs, or start it with `--diff builtin`. If delta exits with an error, commit-trail shows the built-in diff and the error in the footer.
+
+The `D` key suspends commit-trail and opens the selected diff in a pager. commit-trail resumes when you quit the pager.
+
+- In delta mode, `D` runs `git -c core.pager='delta --paging=always' show <commit> -- <file>`. delta's navigation keys (`n`, `N`) and search work there.
+- In built-in mode, `D` runs `git show <commit> -- <file>` with the pager from your Git config.
+- In the PR timeline, `D` shows `git diff` from before the PR's first commit to its last commit.
+- commit-trail adds `-+F` to `LESS`, so `less` stays open when the diff fits on one screen. Your other `LESS` options stay in effect.
 
 ### Generate a report without the interface
 
@@ -173,6 +213,7 @@ A report never claims that a later change resolves a review concern. It shows th
 | `--copy` | `report` only: copy the Markdown report to the clipboard |
 | `--max-diff-lines <n>` | Show at most `n` diff lines for each patch in a report. The default is 60 |
 | `--report-dir <path>` | Write reports from the `r` and `R` keys to `<path>` |
+| `--diff <renderer>` | Renderer for the full diff view: `auto`, `delta`, or `builtin`. The default `auto` uses delta if it is on `PATH`. `delta` stops with an error if delta is not on `PATH` |
 
 ## How commit-trail builds the history
 
