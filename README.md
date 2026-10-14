@@ -61,7 +61,7 @@ To install the newest commit on `main` instead of the latest release, run `brew 
 
 To upgrade, run `brew update`, then run `brew upgrade commit-trail`.
 
-Homebrew builds commit-trail from source with Bun. It installs Bun as a build dependency and installs `gh` as a runtime dependency.
+Homebrew builds commit-trail from source. The formula downloads a pinned Bun release for the build and does not install a Bun formula, so it works with any existing Bun installation. It installs `gh` as a runtime dependency.
 
 Note: while the GitHub repository is private, Homebrew must authenticate to GitHub to clone it. Use one of these methods:
 
@@ -229,7 +229,7 @@ bun run start -- 1  # run from source, with arguments after --
 ### Release a new version for Homebrew
 
 1. Update `version` in `package.json`.
-2. Update the `tag` and `version` values in `Formula/commit-trail.rb`.
+2. Update the `tag` and `version` values in `Formula/commit-trail.rb`. To change the Bun version that builds the release, update the four Bun `url` and `sha256` pairs from the Bun release's `SHASUMS256.txt` file.
 3. Commit the changes, then create and push the tag:
 
    ```bash
