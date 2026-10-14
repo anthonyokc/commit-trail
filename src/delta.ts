@@ -15,7 +15,7 @@ export function deltaInstalled(): boolean {
 export function resolveDiffRenderer(choice: DiffRendererChoice): DiffRenderer {
   if (choice === "builtin") return "builtin";
   if (deltaInstalled()) return "delta";
-  if (choice === "delta") throw new Error("--diff delta requires delta on PATH. Install it with: brew install git-delta");
+  if (choice === "delta") throw new Error("The delta diff renderer (from --diff or the config file) requires delta on PATH. Install it with: brew install git-delta");
   return "builtin";
 }
 

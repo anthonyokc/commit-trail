@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { ChangeAnalyzer } from "./analysis.ts";
 import { parseArgs, USAGE, type CliOptions } from "./cli.ts";
 import { copyToClipboard } from "./clipboard.ts";
+import { defaultConfigPath, loadConfig } from "./config.ts";
 import { resolveDiffRenderer } from "./delta.ts";
 import { Git } from "./git.ts";
 import { CachedSource, defaultCacheDir, GhSource } from "./github.ts";
@@ -40,7 +41,8 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const git = await Git.open(resolve(options.repo));
-  const diffRenderer = options.command === "tui" ? resolveDiffRenderer(options.diff) : "builtin";
+  const config = await loadConfig(options.config ?? defaultConfigPath());
+  const diffRenderer = options.command === "tui" ? resolveDiffRenderer(options.diff ?? config.diff ?? "auto") : "builtin";
   const source = await CachedSource.create({
     inner: options.offline ? null : new GhSource(git.root),
     cacheDir: options.cacheDir ?? defaultCacheDir(),

@@ -17,7 +17,10 @@ export interface CliOptions {
   copy: boolean;
   maxDiffLines: number;
   reportDir?: string;
-  diff: DiffRendererChoice;
+  /** Renderer from `--diff`, or `undefined` so the config file applies. */
+  diff?: DiffRendererChoice;
+  /** Config file from `--config`, or `undefined` for the default path. */
+  config?: string;
 }
 
 export const USAGE = `commit-trail: follow each file's changes across GitHub pull requests.
@@ -48,7 +51,8 @@ Options:
       --copy                  report: copy Markdown to the clipboard
       --max-diff-lines <n>    Diff lines per patch in reports (default: 60)
       --report-dir <path>     Directory for reports written from the interface (default: system temp directory)
-      --diff <renderer>       Full diff view: auto, delta, or builtin (default: auto, which uses delta if installed)
+      --diff <renderer>       Full diff view: auto, delta, or builtin (default: the config file's diff, else auto)
+      --config <path>         Config file (default: $XDG_CONFIG_HOME/commit-trail/config.toml)
   -h, --help                  Show this help
   -V, --version               Show the version
 
@@ -69,7 +73,6 @@ export function parseArgs(argv: string[]): CliOptions {
     refresh: false,
     copy: false,
     maxDiffLines: 60,
-    diff: "auto",
   };
   const positional: string[] = [];
   const against: string[] = [];
@@ -137,6 +140,9 @@ export function parseArgs(argv: string[]): CliOptions {
         options.maxDiffLines = n;
         break;
       }
+      case "--config":
+        options.config = value(flag);
+        break;
       case "--diff": {
         const raw = value(flag);
         if (raw !== "auto" && raw !== "delta" && raw !== "builtin") throw new Error(`--diff must be auto, delta, or builtin, not "${raw}".`);
