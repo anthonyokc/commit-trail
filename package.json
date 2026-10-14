@@ -1,0 +1,24 @@
+{
+  "name": "commit-trail",
+  "version": "0.1.0",
+  "description": "Follow one file's changes across a set of GitHub pull requests in the terminal.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "commit-trail": "./bin/commit-trail"
+  },
+  "scripts": {
+    "start": "bun src/main.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build --compile --minify ./src/main.ts --outfile dist/commit-trail"
+  },
+  "dependencies": {
+    "@opentui/core": "0.6.5"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
