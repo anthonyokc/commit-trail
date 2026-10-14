@@ -1,6 +1,6 @@
 {
   "name": "commit-trail",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Follow one file's changes across a set of GitHub pull requests in the terminal.",
   "license": "MIT",
   "type": "module",
