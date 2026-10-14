@@ -1,3 +1,4 @@
+import type { DiffRendererChoice } from "./delta.ts";
 import { parseSelection } from "./selection.ts";
 
 export interface CliOptions {
@@ -16,6 +17,7 @@ export interface CliOptions {
   copy: boolean;
   maxDiffLines: number;
   reportDir?: string;
+  diff: DiffRendererChoice;
 }
 
 export const USAGE = `commit-trail: follow each file's changes across GitHub pull requests.
@@ -46,11 +48,12 @@ Options:
       --copy                  report: copy Markdown to the clipboard
       --max-diff-lines <n>    Diff lines per patch in reports (default: 60)
       --report-dir <path>     Directory for reports written from the interface (default: system temp directory)
+      --diff <renderer>       Full diff view: auto, delta, or builtin (default: auto, which uses delta if installed)
   -h, --help                  Show this help
   -V, --version               Show the version
 
 Keys (interface):
-  j/k Files   h/l Timeline   Enter Diff   Esc Back   p PR/commit timeline   o tuicr (PR)   O tuicr (commit)
+  j/k Files   h/l Timeline   Enter Diff   t delta/built-in   D Pager   Esc Back   p PR/commit timeline   o tuicr (PR)   O tuicr (commit)
   a Focus PR files/all files   / Search   r Report (selected PR)   R Report (all PRs)   y Copy report   ? Help and notes   q Quit
 `;
 
@@ -66,6 +69,7 @@ export function parseArgs(argv: string[]): CliOptions {
     refresh: false,
     copy: false,
     maxDiffLines: 60,
+    diff: "auto",
   };
   const positional: string[] = [];
   const against: string[] = [];
@@ -131,6 +135,12 @@ export function parseArgs(argv: string[]): CliOptions {
         const n = Number(raw);
         if (!Number.isInteger(n) || n < 0) throw new Error(`--max-diff-lines must be a whole number, not "${raw}".`);
         options.maxDiffLines = n;
+        break;
+      }
+      case "--diff": {
+        const raw = value(flag);
+        if (raw !== "auto" && raw !== "delta" && raw !== "builtin") throw new Error(`--diff must be auto, delta, or builtin, not "${raw}".`);
+        options.diff = raw;
         break;
       }
       case "--against":

@@ -1,4 +1,13 @@
-import { StyledText, bg as withBg, bold as withBold, dim as withDim, fg as withFg, type TextChunk } from "@opentui/core";
+import {
+  StyledText,
+  bg as withBg,
+  bold as withBold,
+  dim as withDim,
+  fg as withFg,
+  italic as withItalic,
+  underline as withUnderline,
+  type TextChunk,
+} from "@opentui/core";
 
 export interface Span {
   text: string;
@@ -6,6 +15,8 @@ export interface Span {
   bg?: string;
   bold?: boolean;
   dim?: boolean;
+  italic?: boolean;
+  underline?: boolean;
 }
 
 export type Line = Span[];
@@ -62,6 +73,8 @@ export function toStyled(lines: Line[]): StyledText {
       if (part.bg) chunk = withBg(part.bg)(chunk);
       if (part.bold) chunk = withBold(chunk);
       if (part.dim) chunk = withDim(chunk);
+      if (part.italic) chunk = withItalic(chunk);
+      if (part.underline) chunk = withUnderline(chunk);
       chunks.push(chunk);
     }
     if (index < lines.length - 1) chunks.push(withFg(theme.text)("\n"));

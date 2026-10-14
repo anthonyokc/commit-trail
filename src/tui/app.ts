@@ -9,6 +9,8 @@ import { focusReport, lineSummary, patchBody, selectionReport, changeWord } from
 import { formatNumbers } from "../selection.ts";
 import type { FileChange, FileHistory } from "../types.ts";
 import { tuicrCommandForCommit, tuicrCommandForPullRequest } from "../tuicr.ts";
+import { deltaInstalled, renderWithDelta, type DiffRenderer } from "../delta.ts";
+import { parseAnsi } from "./ansi.ts";
 import { diffLine, fit, span, theme, toStyled, type Line } from "./styled.ts";
 
 export interface AppOptions {
@@ -18,8 +20,12 @@ export interface AppOptions {
   /** Directory for reports that the `r` and `R` keys write. */
   reportDir: string;
   maxDiffLines: number;
-  /** Runs an interactive command with the terminal. Returns its exit status. */
-  launch?: (command: string[]) => Promise<number>;
+  /** Renderer for the full diff view. `t` switches it while the interface runs. */
+  diffRenderer?: DiffRenderer;
+  /** Renders a unified diff with delta at a width. Defaults to running the `delta` command. */
+  renderDelta?: (patch: string, width: number) => Promise<string>;
+  /** Runs an interactive command with the terminal and extra environment variables. Returns its exit status. */
+  launch?: (command: string[], env?: Record<string, string>) => Promise<number>;
 }
 
 /** One node on a file's timeline: one commit, or one pull request's commits in PR mode. */
@@ -61,7 +67,9 @@ export class TrailApp {
   private lastReport: string | null = null;
   /** In focus mode, list only files that the focus PR changes. */
   private focusOnly: boolean;
-  private readonly rangePatches = new Map<string, Promise<string[]>>();
+  private readonly rangePatches = new Map<string, Promise<string>>();
+  private readonly deltaOutput = new Map<string, Promise<Line[]>>();
+  private diffRenderer: DiffRenderer;
   private renderToken = 0;
 
   constructor(
@@ -69,6 +77,7 @@ export class TrailApp {
     private readonly options: AppOptions,
   ) {
     this.focusOnly = options.model.focus !== null;
+    this.diffRenderer = options.diffRenderer ?? "builtin";
     this.files = this.filteredFiles();
     const root = new BoxRenderable(renderer, { id: "root", flexDirection: "column", width: "100%", height: "100%" });
     this.header = new TextRenderable(renderer, { id: "header", height: HEADER_HEIGHT, wrapMode: "none" });
@@ -162,6 +171,7 @@ export class TrailApp {
     else if (char === "r") void this.writeReport(false);
     else if (char === "R") void this.writeReport(true);
     else if (char === "y") void this.copyReport();
+    else if (char === "D") void this.openPager();
     else if (char === "?") this.view = "help";
     else return;
     this.render();
@@ -202,7 +212,16 @@ export class TrailApp {
       this.diffScroll = 0;
     } else if (char === "o") void this.openTuicr(false);
     else if (char === "O") void this.openTuicr(true);
-    else return;
+    else if (char === "D") void this.openPager();
+    else if (char === "t") {
+      if (this.diffRenderer === "builtin" && !this.deltaAvailable()) {
+        this.status = "delta is not installed. Install it with: brew install git-delta";
+      } else {
+        this.diffRenderer = this.diffRenderer === "delta" ? "builtin" : "delta";
+        this.diffScroll = 0;
+        this.status = this.diffRenderer === "delta" ? "Diffs use delta." : "Diffs use the built-in renderer.";
+      }
+    } else return;
     this.render();
   }
 
@@ -301,18 +320,55 @@ export class TrailApp {
     return Promise.all(entry.changes.map((change) => this.options.analyzer.analyze(change)));
   }
 
-  /** Returns the diff lines for an entry. PR mode diffs from before the first commit to after the last commit. */
-  private diffFor(entry: Entry): Promise<string[]> {
-    if (entry.changes.length === 1) return this.options.analyzer.analyze(entry.changes[0]!).then((a) => patchBody(a.patch.text));
+  private entryPaths(entry: Entry): string[] {
+    return [...new Set(entry.changes.flatMap((change) => (change.oldPath ? [change.oldPath, change.path] : [change.path])))];
+  }
+
+  /** Returns an entry's complete patch. PR mode diffs from before the first commit to after the last commit. */
+  private patchText(entry: Entry): Promise<string> {
+    if (entry.changes.length === 1) return this.options.analyzer.analyze(entry.changes[0]!).then((a) => a.patch.text);
     const key = `${entry.firstOid}..${entry.lastOid}`;
     let cached = this.rangePatches.get(key);
     if (!cached) {
       const parent = this.options.model.commits.get(entry.firstOid)?.parents[0] ?? null;
-      const paths = [...new Set(entry.changes.flatMap((change) => (change.oldPath ? [change.oldPath, change.path] : [change.path])))];
-      cached = this.options.git.rangePatch(parent, entry.lastOid, paths).then((patch) => patchBody(patch.text));
+      cached = this.options.git.rangePatch(parent, entry.lastOid, this.entryPaths(entry)).then((patch) => patch.text);
       this.rangePatches.set(key, cached);
     }
     return cached;
+  }
+
+  /** Returns an entry's hunk lines without file headers. */
+  private diffFor(entry: Entry): Promise<string[]> {
+    return this.patchText(entry).then(patchBody);
+  }
+
+  private deltaAvailable(): boolean {
+    return this.options.renderDelta !== undefined || deltaInstalled();
+  }
+
+  /**
+   * Returns the styled lines for the full diff view.
+   * If delta fails, the view falls back to the built-in renderer and the footer shows delta's error.
+   */
+  private async styledDiff(entry: Entry, width: number): Promise<Line[]> {
+    if (this.diffRenderer === "delta") {
+      const key = `${entry.firstOid}..${entry.lastOid}:${width}`;
+      let cached = this.deltaOutput.get(key);
+      if (!cached) {
+        const render = this.options.renderDelta ?? ((patch: string, w: number) => renderWithDelta(patch, w, this.options.git.root));
+        cached = this.patchText(entry).then((patch) => (patch.trim() === "" ? [] : render(patch, width).then(parseAnsi)));
+        this.deltaOutput.set(key, cached);
+      }
+      try {
+        return await cached;
+      } catch (error) {
+        this.deltaOutput.delete(key);
+        this.diffRenderer = "builtin";
+        this.status = `delta failed, so the built-in diff is shown: ${error instanceof Error ? error.message : String(error)}`;
+        this.footer.content = toStyled([fit(this.footerLine(), this.width)]);
+      }
+    }
+    return (await this.diffFor(entry)).map(diffLine);
   }
 
   // ----- Rendering -----
@@ -350,7 +406,7 @@ export class TrailApp {
     if (this.view === "diff") {
       this.detailBox.title = ` DIFF ${current.entry.label} ${current.file.path} `;
       this.detailText.content = toStyled([[span("Loading diff…", { fg: theme.muted })]]);
-      void this.diffFor(current.entry).then((lines) => {
+      void this.styledDiff(current.entry, layout.detailInner.width).then((lines) => {
         if (token !== this.renderToken) return;
         this.detailText.content = toStyled(this.diffLines(current.entry, lines, layout.detailInner.width, layout.detailInner.height));
       });
@@ -389,7 +445,7 @@ export class TrailApp {
   private footerLine(): Line {
     if (this.searching) return [span(" Search: ", { fg: theme.accent }), span(this.query + "▏"), span("   Enter keep  Esc clear", { fg: theme.muted })];
     if (this.status) return [span(` ${this.status}`, { fg: theme.warning })];
-    if (this.view === "diff") return [span(" j/k Scroll  d/u Page  h/l Change  o tuicr PR  O tuicr commit  Esc Back  q Quit", { fg: theme.muted })];
+    if (this.view === "diff") return [span(" j/k Scroll  d/u Page  h/l Change  t delta/built-in  D Pager  o tuicr PR  O tuicr commit  Esc Back  q Quit", { fg: theme.muted })];
     const hints = " j/k Files  h/l Timeline  Enter Diff  p PR/commit  o tuicr  / Search  r Report  y Copy  ? Help  q Quit";
     return [span(hints + (this.query ? `   [filter: ${this.query}]` : ""), { fg: theme.muted })];
   }
@@ -584,21 +640,22 @@ export class TrailApp {
       const compact = compactDiff(diff, 1);
       const shown = compact.slice(0, room - 1);
       lines.push(...shown.map(diffLine));
-      if (compact.length > shown.length) lines.push([span(`… ${compact.length - shown.length} more lines. Press Enter for the full diff.`, { fg: theme.muted })]);
+      if (compact.length > shown.length) lines.push([span(`… ${compact.length - shown.length} more line${compact.length - shown.length === 1 ? "" : "s"}. Press Enter for the full diff.`, { fg: theme.muted })]);
     }
     return lines.slice(0, height).map((line) => fit(line, width));
   }
 
-  private diffLines(entry: Entry, diff: string[], width: number, height: number): Line[] {
+  private diffLines(entry: Entry, diff: Line[], width: number, height: number): Line[] {
     const header: Line = [
       span(`${entry.label} `, { fg: theme.pr, bold: true }),
       span(entry.changes.length === 1 ? entry.lastOid.slice(0, 7) : `${entry.firstOid.slice(0, 7)}..${entry.lastOid.slice(0, 7)}`, { fg: theme.accent }),
       span(`  ${this.options.model.commits.get(entry.lastOid)?.subject ?? ""}`, { fg: theme.muted }),
+      span(`  [${this.diffRenderer === "delta" ? "delta" : "built-in"}]`, { fg: theme.muted }),
     ];
     const room = Math.max(1, height - 2);
     const maxScroll = Math.max(0, diff.length - room);
     this.diffScroll = Math.min(this.diffScroll, maxScroll);
-    const body = diff.slice(this.diffScroll, this.diffScroll + room).map(diffLine);
+    const body = diff.slice(this.diffScroll, this.diffScroll + room);
     const position: Line = [span(diff.length === 0 ? "No text diff." : `Lines ${this.diffScroll + 1}-${Math.min(diff.length, this.diffScroll + room)} of ${diff.length}`, { fg: theme.muted })];
     return [header, ...body, position].map((line) => fit(line, width));
   }
@@ -609,6 +666,8 @@ export class TrailApp {
       ["j / k", "Select the next or previous file"],
       ["h / l", "Move backward or forward through the file's changes"],
       ["Enter", "Show the full diff of the selected change"],
+      ["t", "In the diff view, switch between delta and the built-in diff renderer"],
+      ["D", "Open the selected diff in a pager: delta in delta mode, Git's pager otherwise"],
       ["Esc", "Return to the file history, or clear the search"],
       ["p", "Switch between the commit timeline and the PR timeline"],
       ["o", "Open the selected PR in tuicr"],
@@ -675,6 +734,19 @@ export class TrailApp {
     this.render();
   }
 
+  /** Shows the selected diff in delta (in delta mode) or in Git's configured pager (in built-in mode). */
+  private async openPager(): Promise<void> {
+    const current = this.currentEntry();
+    if (!current) return;
+    const { entry } = current;
+    const parent = this.options.model.commits.get(entry.firstOid)?.parents[0] ?? null;
+    const command = pagerCommand(entry.changes.length === 1 ? null : parent, entry.lastOid, this.entryPaths(entry), this.diffRenderer === "delta");
+    const launch = this.options.launch ?? ((cmd, env) => launchInTerminal(this.renderer, cmd, this.options.git.root, env));
+    const exitCode = await launch(command, pagerEnvironment(process.env.LESS));
+    this.status = exitCode === 0 ? "Returned from the pager." : `${command.join(" ")} exited with status ${exitCode}.`;
+    this.render();
+  }
+
   private async openTuicr(commit: boolean): Promise<void> {
     const current = this.currentEntry();
     if (!current) return;
@@ -718,6 +790,26 @@ function printable(key: KeyEvent): string {
   return [...text].length === 1 && text >= " " && text !== "\x7f" ? text : "";
 }
 
+/**
+ * Returns the environment for Git's pager. Git sets LESS=FRX when LESS is unset, and F makes less exit
+ * at once when the diff fits on one screen, which would return to commit-trail before the user reads it.
+ * The result keeps the user's LESS options and turns F off with `-+F`.
+ */
+export function pagerEnvironment(less: string | undefined): Record<string, string> {
+  return { LESS: `${less && less.trim() !== "" ? less.trim() : "-R"} -+F` };
+}
+
+/**
+ * Returns the Git command that shows a diff in a pager.
+ * Without `from`, it shows the single commit `to` with its message. With `from`, it shows the range diff.
+ * With `delta`, Git pipes the diff to `delta --paging=always`. delta with its default `--paging=auto`
+ * passes `--quit-if-one-screen` to less, which closes a short diff at once. Otherwise Git uses its own pager.
+ */
+export function pagerCommand(from: string | null, to: string, paths: string[], delta: boolean): string[] {
+  const git = delta ? ["git", "-c", "core.pager=delta --paging=always"] : ["git"];
+  return from ? [...git, "diff", from, to, "--", ...paths] : [...git, "show", to, "--", ...paths];
+}
+
 function mergeOrigins(origins: LineOrigin[]): LineOrigin[] {
   const merged = new Map<string, LineOrigin>();
   for (const origin of origins) {
@@ -730,11 +822,11 @@ function mergeOrigins(origins: LineOrigin[]): LineOrigin[] {
   return [...merged.values()];
 }
 
-async function launchInTerminal(renderer: CliRenderer, command: string[], cwd: string): Promise<number> {
+async function launchInTerminal(renderer: CliRenderer, command: string[], cwd: string, env?: Record<string, string>): Promise<number> {
   if (!Bun.which(command[0]!)) return 127;
   await renderer.suspend();
   try {
-    const child = Bun.spawn(command, { cwd, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    const child = Bun.spawn(command, { cwd, stdin: "inherit", stdout: "inherit", stderr: "inherit", env: { ...process.env, ...env } });
     return await child.exited;
   } finally {
     await renderer.resume();
