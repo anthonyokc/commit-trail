@@ -2,7 +2,7 @@
   "name": "commit-trail",
   "version": "0.1.0",
   "description": "Follow one file's changes across a set of GitHub pull requests in the terminal.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "private": true,
   "bin": {

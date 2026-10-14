@@ -244,3 +244,7 @@ bun run start -- 1  # run from source, with arguments after --
    brew reinstall anthonyokc/commit-trail/commit-trail
    brew test commit-trail
    ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -3,6 +3,7 @@ class CommitTrail < Formula
   homepage "https://github.com/anthonyokc/commit-trail"
   url "https://github.com/anthonyokc/commit-trail.git", tag: "v0.1.0", using: :git
   version "0.1.0"
+  license "MIT"
   head "https://github.com/anthonyokc/commit-trail.git", branch: "main", using: :git
 
   depends_on "bun" => :build
