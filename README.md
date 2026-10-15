@@ -11,45 +11,6 @@ The file is the main unit of navigation. You select a file, step through the com
 
 The demo runs `commit-trail 778 780` in a clone of [agavra/tuicr](https://github.com/agavra/tuicr). To record it again, run `scripts/record-demo.sh`.
 
-```text
- commit-trail  example/web-service  Branch: main
- PRs: #1, #4, #10  2 files  Timeline: commits  Focus: #1  Files: focus PR (a: all)
-┌─ FILES ────────────────────┐┌─ FILE HISTORY ─────────────────────────────────────────────────┐
-│ src/api/                   ││ src/lib/cache.ts  3 changes in 3 PRs                           │
-│   rate_limit.ts         1  ││                                                                │
-│ src/lib/                   ││   ● #1 ──◉ #4 ──● #10                                          │
-│ › cache.ts              3  ││                                                                │
-│                            ││    1  #1    a4b2880  Modified  +1 -1  add per-route rate limi… │
-│                            ││ ›  2  #4    35d7d77  Modified  +1 -1  read cache TTL from con… │
-│                            ││    3  #10   5771ec0  Modified  +1 -1  split cache eviction in… │
-│                            ││                                                                │
-│                            ││                                                                │
-│                            ││                                                                │
-│                            ││                                                                │
-│                            ││                                                                │
-│                            ││                                                                │
-└────────────────────────────┘└────────────────────────────────────────────────────────────────┘
-┌─ SELECTED CHANGE ────────────────────────────────────────────────────────────────────────────┐
-│ PR #4: fix(cache): read the TTL from config  open  @author                                   │
-│ Commit: 35d7d77  read cache TTL from config  2026-10-15                                      │
-│ File: src/lib/cache.ts  Modified, +1 -1                                                      │
-│ Hunk context: import { config } from "../config";                                            │
-│ Revises: replaces 1 line(s) from #1 a4b2880                                                  │
-│ Earlier changes: #1 a4b2880                                                                  │
-│ Later changes:   #10 5771ec0                                                                 │
-│                                                                                              │
-│ Lines 4–8 · const store = new Map<string, Entry>();                                          │
-│ 4 4                                                                                          │
-│ 5 5   export function ttlFor(key: string): number {                                          │
-│ 6   -   return 60;                                                                           │
-│   6 +   return config.cacheTtl;                                                              │
-│ … 2 more lines. Press Enter for the full diff.                                               │
-└──────────────────────────────────────────────────────────────────────────────────────────────┘
- j/k Files  h/l Timeline  Enter Diff  p PR/commit  o tuicr  / Search  r Report  y Copy  ? Help …
-```
-
-In this example, PR #4 replaces a line that PR #1 introduced in `src/lib/cache.ts`. PR #10 changes the same file later.
-
 ## Requirements
 
 - macOS or Linux (x64 or arm64).
