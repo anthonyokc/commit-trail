@@ -413,7 +413,7 @@ export class TrailApp {
    */
   private patchText(entry: Entry, contextLines = 3): Promise<string> {
     if (entry.changes.length === 1 && contextLines === 3) return this.options.analyzer.analyze(entry.changes[0]!).then((a) => a.patch.text);
-    const key = `${entry.firstOid}..${entry.lastOid}:U${contextLines}`;
+    const key = `${entryKey(entry)}:U${contextLines}`;
     let cached = this.patches.get(key);
     if (!cached) {
       const paths = this.entryPaths(entry);
@@ -920,8 +920,9 @@ const EXPAND_STEP = 10;
 /** Context line count that makes Git include every line of the file. */
 const WHOLE_FILE = 1_000_000;
 
+/** Identifies one file's change. One commit can change several files, so the key includes the path. */
 function entryKey(entry: Entry): string {
-  return `${entry.firstOid}..${entry.lastOid}`;
+  return `${entry.firstOid}..${entry.lastOid}:${entry.changes[entry.changes.length - 1]!.path}`;
 }
 
 /** Colors one built-in diff line and replaces a `@@` header with a readable heading. */

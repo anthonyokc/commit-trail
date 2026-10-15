@@ -23,9 +23,9 @@ afterAll(async () => {
   await repo.dispose();
 });
 
-async function startApp(overrides: Partial<AppOptions> = {}) {
-  const git = await Git.open(repo.root);
-  const source = new FakeSource(repo, [
+async function startApp(overrides: Partial<AppOptions> = {}, fixture: FixtureRepo = repo) {
+  const git = await Git.open(fixture.root);
+  const source = new FakeSource(fixture, [
     { number: 1, head: "feat-1", base: "main" },
     { number: 4, head: "feat-2", base: "main" },
   ]);
@@ -37,7 +37,7 @@ async function startApp(overrides: Partial<AppOptions> = {}) {
     model,
     git,
     analyzer: new ChangeAnalyzer(git, model),
-    reportDir: repo.root,
+    reportDir: fixture.root,
     maxDiffLines: 20,
     // The built-in renderer keeps these tests independent of syntax themes. Tests that need another renderer override it.
     diffRenderer: "builtin",
@@ -196,4 +196,26 @@ test("a click on a commit in Later changes selects that change, and a click else
   await setup.mockMouse.click(5, titleRow);
   await frameWith("DIFF #4 R/clean.R");
   await setup.dispose();
+});
+
+test("two files changed by one commit each show their own diff", async () => {
+  const two = await FixtureRepo.create();
+  await two.commit("initial", { "a.txt": numberedFile(12), "b.txt": numberedFile(12) });
+  await two.checkout("feat-1", "main");
+  await two.commit("change both", { "a.txt": numberedFile(12, { 6: "alpha change" }), "b.txt": numberedFile(12, { 6: "beta change" }) });
+  await two.checkout("feat-2", "feat-1");
+  await two.commit("change a again", { "a.txt": numberedFile(12, { 6: "alpha again" }) });
+  await two.checkout("main");
+  const { setup, frameWith } = await startApp({ diffRenderer: "pierre" }, two);
+  await frameWith("alpha change");
+  await setup.mockInput.pressKey("j");
+  let frame = await frameWith("beta change");
+  expect(frame).not.toContain("alpha change");
+  await setup.mockInput.pressEnter();
+  frame = await frameWith("DIFF #1 b.txt");
+  frame = await frameWith("beta change");
+  expect(frame).toContain("[pierre");
+  expect(frame).not.toContain("alpha");
+  await setup.dispose();
+  await two.dispose();
 });
