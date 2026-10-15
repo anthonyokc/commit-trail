@@ -9,13 +9,12 @@ export function deltaInstalled(): boolean {
 
 /**
  * Selects the diff renderer.
- * `auto` selects delta when it is on `PATH`, and the bundled @pierre/diffs renderer otherwise.
+ * `auto` is the default and selects the bundled @pierre/diffs renderer (`pierre`).
  * `delta` throws an error when delta is not on `PATH`.
  */
 export function resolveDiffRenderer(choice: DiffRendererChoice): DiffRenderer {
-  if (choice === "builtin" || choice === "pierre") return choice;
-  if (deltaInstalled()) return "delta";
   if (choice === "auto") return "pierre";
+  if (choice !== "delta" || deltaInstalled()) return choice;
   throw new Error("The delta diff renderer (from --diff or the config file) requires delta on PATH. Install it with: brew install git-delta");
 }
 
