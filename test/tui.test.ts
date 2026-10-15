@@ -145,10 +145,10 @@ test("the interface falls back to the built-in renderer when delta fails", async
       throw new Error("unknown option");
     },
   });
-  let frame = await frameWith("delta failed, so the built-in diff is shown: unknown option");
-  expect(frame).toContain("+  nrow(data)");
+  await frameWith("delta failed, so the built-in diff is shown: unknown option");
+  await frameWith("+  nrow(data)");
   await setup.mockInput.pressEnter();
-  frame = await frameWith("[built-in");
+  const frame = await frameWith("[built-in");
   expect(frame).toContain("+  nrow(data)");
   await setup.dispose();
 });
