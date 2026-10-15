@@ -223,6 +223,12 @@ export class Git {
     return ids;
   }
 
+  /** Returns a file's contents at a revision, or `null` when the file does not exist there. */
+  async fileAt(revision: string, path: string): Promise<string | null> {
+    const result = await run(["git", "cat-file", "blob", `${revision}:${path}`], { cwd: this.root });
+    return result.exitCode === 0 ? result.stdout : null;
+  }
+
   /** Returns one commit's diff against its first parent, limited to the given paths. */
   async commitPatch(oid: string, paths: string[], contextLines = 3): Promise<FilePatch> {
     const text = await this.exec([

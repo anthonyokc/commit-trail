@@ -11,7 +11,7 @@ import type { FileChange, FileHistory } from "../types.ts";
 import { tuicrCommandForCommit, tuicrCommandForPullRequest } from "../tuicr.ts";
 import { deltaInstalled, renderWithDelta, type DeltaOptions, type DiffRenderer } from "../delta.ts";
 import { describeHunk, parseHunkHeader } from "../hunk.ts";
-import { renderWithPierre, type PierreOptions, type RenderedDiff } from "../pierre.ts";
+import { EXPAND_STEP, renderWithPierre, type DiffAction, type Expansion, type GapAction, type PierreOptions, type RenderedDiff } from "../pierre.ts";
 import { parseAnsi } from "./ansi.ts";
 import { diffLine, fit, span, theme, toStyled, type Line } from "./styled.ts";
 
@@ -79,10 +79,17 @@ export class TrailApp {
   private focusOnly: boolean;
   private readonly patches = new Map<string, Promise<string>>();
   private readonly rendered = new Map<string, Promise<RenderedDiff>>();
-  /** Extra context lines per entry, added by `e`. `WHOLE_FILE` shows the complete file. */
-  private readonly expansion = new Map<string, number>();
-  /** The full diff view's last frame, used to map a mouse click to a separator row. */
-  private visibleDiff: { scroll: number; gapRows: number[] } | null = null;
+  /** Revealed hidden lines per entry and view, keyed by `viewKey`. */
+  private readonly expansions = new Map<string, Expansion>();
+  private readonly contents = new Map<string, Promise<{ old: string; new: string } | undefined>>();
+  /** First visible diff line in the selected change panel, and the entry it belongs to. */
+  private previewScroll = 0;
+  private previewKey = "";
+  /**
+   * Where the last drawn diff sits in the panel text: the panel row of its first visible line, the first
+   * visible diff line, and its clickable actions. A mouse click maps through it to an action.
+   */
+  private visibleDiff: { row0: number; scroll: number; actions: DiffAction[] } | null = null;
   /** Clickable commit labels in the selected change panel: panel row, column range, and timeline index. */
   private detailTargets: { row: number; start: number; end: number; index: number }[] = [];
   private diffRenderer: DiffRenderer;
@@ -191,6 +198,10 @@ export class TrailApp {
     else if (char === "r") void this.writeReport(false);
     else if (char === "R") void this.writeReport(true);
     else if (char === "y") void this.copyReport();
+    else if (char === "e") return this.expand(false);
+    else if (char === "E") return this.expand(true);
+    else if (char === "J") this.previewScroll += 3;
+    else if (char === "K") this.previewScroll = Math.max(0, this.previewScroll - 3);
     else if (char === "D") void this.openPager();
     else if (char === "?") this.view = "help";
     else return;
@@ -244,58 +255,116 @@ export class TrailApp {
     this.render();
   }
 
-  /** Adds `EXPAND_STEP` context lines to the selected entry, or with `whole`, switches it to the whole file and back. */
+  private mode(): "full" | "preview" {
+    return this.view === "diff" ? "full" : "preview";
+  }
+
+  private expansionFor(entry: Entry, mode: "full" | "preview"): Expansion {
+    const key = `${mode}:${entryKey(entry)}`;
+    let expansion = this.expansions.get(key);
+    if (!expansion) {
+      expansion = { all: 0, gaps: new Map(), whole: false };
+      this.expansions.set(key, expansion);
+    }
+    return expansion;
+  }
+
+  /**
+   * `e` reveals `EXPAND_STEP` more lines at both ends of every hidden region. `E` (`whole`) switches between
+   * the whole file and the previous state. Each view of each change keeps its own expansion.
+   */
   private expand(whole: boolean): void {
     const current = this.currentEntry();
     if (!current) return;
-    const key = entryKey(current.entry);
-    const extra = this.expansion.get(key) ?? 0;
+    const expansion = this.expansionFor(current.entry, this.mode());
     if (whole) {
-      this.expansion.set(key, extra === WHOLE_FILE ? 0 : WHOLE_FILE);
-      this.status = extra === WHOLE_FILE ? "Showing the changes with their context lines." : "Showing the whole file.";
-    } else if (extra === WHOLE_FILE) {
-      this.status = "The whole file is already shown. Press E to collapse it.";
+      expansion.whole = !expansion.whole;
+      this.status = expansion.whole ? "Showing the whole file. Press E to return to the changes." : "Showing the changes.";
+    } else if (expansion.whole) {
+      this.status = "The whole file is already shown. Press E to return to the changes.";
     } else {
-      this.expansion.set(key, extra + EXPAND_STEP);
-      this.status = `Showing ${this.contextFor(current.entry)} unchanged lines around each change.`;
+      expansion.all += EXPAND_STEP;
+      this.status = `Showing ${expansion.all} more lines at each end of every hidden region.`;
     }
     this.render();
   }
 
-  private contextFor(entry: Entry): number {
-    const extra = this.expansion.get(entryKey(entry)) ?? 0;
-    return extra === WHOLE_FILE ? WHOLE_FILE : (this.options.contextLines ?? 5) + extra;
+  /** Reveals one hidden region from one end, or completely. */
+  private applyAction(entry: Entry, mode: "full" | "preview", action: DiffAction): void {
+    const expansion = this.expansionFor(entry, mode);
+    const state = expansion.gaps.get(action.gap) ?? { down: 0, up: 0 };
+    const step: Record<GapAction, () => void> = {
+      down: () => (state.down += EXPAND_STEP),
+      up: () => (state.up += EXPAND_STEP),
+      // The region at the file start reveals only from its end, and the region at the file end only from its start.
+      all: () => {
+        state.down = Number.MAX_SAFE_INTEGER;
+        state.up = Number.MAX_SAFE_INTEGER;
+      },
+    };
+    step[action.action]();
+    expansion.gaps.set(action.gap, state);
+    this.render();
+  }
+
+  /** Base context lines for a view: `context_lines` for the full view, `preview_context_lines` for the panel. */
+  private baseContext(mode: "full" | "preview"): number {
+    return mode === "full" ? (this.options.contextLines ?? 5) : (this.options.previewContextLines ?? 2);
   }
 
   /**
+   * Context lines that Git puts in the patch. pierre reveals hidden lines from the full file contents, so it
+   * uses the base context. delta and the built-in renderer cannot, so `e` and `E` add Git context lines.
+   */
+  private contextFor(entry: Entry, mode: "full" | "preview"): number {
+    const base = this.baseContext(mode);
+    if (this.diffRenderer === "pierre") return base;
+    const expansion = this.expansionFor(entry, mode);
+    return expansion.whole ? WHOLE_FILE : base + expansion.all;
+  }
+
+  private contextLabel(entry: Entry, mode: "full" | "preview"): string {
+    const expansion = this.expansionFor(entry, mode);
+    if (expansion.whole) return "whole file";
+    const context = this.contextFor(entry, mode);
+    const expanded = this.diffRenderer === "pierre" && (expansion.all > 0 || expansion.gaps.size > 0) ? ", expanded" : "";
+    return `${context} context line${context === 1 ? "" : "s"}${expanded}`;
+  }
+
+  /** Returns the diff action under a panel position, using the last drawn diff. */
+  private actionAt(row: number, column: number): DiffAction | undefined {
+    if (!this.visibleDiff) return undefined;
+    const index = row - this.visibleDiff.row0 + this.visibleDiff.scroll;
+    return this.visibleDiff.actions.find((action) => action.row === index && column >= action.start && column < action.end);
+  }
+
+  /**
+   * A click on a "Show" action reveals hidden lines, in either view.
    * In the change panel, a click on a commit label selects that change, and a click elsewhere opens the diff view.
-   * In the diff view, a click on a separator row expands the diff.
    */
   private handleDetailClick(screenX: number, screenY: number): void {
-    if (this.view === "history") {
-      const current = this.currentEntry();
-      if (!current) return;
-      const row = screenY - this.detailText.screenY;
-      const column = screenX - this.detailText.screenX;
-      const target = this.detailTargets.find((t) => t.row === row && column >= t.start && column < t.end);
-      if (target) {
-        this.entryIndex.set(current.file.path, target.index);
-        return this.render();
-      }
-      this.view = "diff";
-      this.diffScroll = 0;
+    const current = this.currentEntry();
+    if (!current || this.view === "help") return;
+    const row = screenY - this.detailText.screenY;
+    const column = screenX - this.detailText.screenX;
+    const action = this.actionAt(row, column);
+    if (action) return this.applyAction(current.entry, this.mode(), action);
+    if (this.view === "diff") return;
+    const target = this.detailTargets.find((t) => t.row === row && column >= t.start && column < t.end);
+    if (target) {
+      this.entryIndex.set(current.file.path, target.index);
       return this.render();
     }
-    if (this.view !== "diff" || !this.visibleDiff) return;
-    // The first text row of the diff view is the commit header line.
-    const index = screenY - this.detailText.screenY - 1 + this.visibleDiff.scroll;
-    if (this.visibleDiff.gapRows.includes(index)) this.expand(false);
+    this.view = "diff";
+    this.diffScroll = 0;
+    this.render();
   }
 
   private handleDetailScroll(direction: string | undefined): void {
-    if (this.view !== "diff") return;
-    if (direction === "down") this.diffScroll += 3;
-    else if (direction === "up") this.diffScroll = Math.max(0, this.diffScroll - 3);
+    const delta = direction === "down" ? 3 : direction === "up" ? -3 : 0;
+    if (delta === 0) return;
+    if (this.view === "diff") this.diffScroll = Math.max(0, this.diffScroll + delta);
+    else if (this.view === "history") this.previewScroll = Math.max(0, this.previewScroll + delta);
     else return;
     this.render();
   }
@@ -440,27 +509,24 @@ export class TrailApp {
    */
   private async styledDiff(entry: Entry, width: number, mode: "full" | "preview"): Promise<RenderedDiff> {
     const preview = mode === "preview";
-    const context = preview ? (this.options.previewContextLines ?? 2) : this.contextFor(entry);
+    const context = this.contextFor(entry, mode);
     const renderer = this.diffRenderer;
+    const expansion = this.expansionFor(entry, mode);
     if (renderer !== "builtin") {
-      const key = `${renderer}:${entryKey(entry)}:${width}:${mode}:U${context}`;
+      const state = renderer === "pierre" ? JSON.stringify([expansion.all, expansion.whole, [...expansion.gaps]]) : "";
+      const key = `${renderer}:${entryKey(entry)}:${width}:${mode}:U${context}:${state}`;
       let cached = this.rendered.get(key);
       if (!cached) {
         cached = this.patchText(entry, context).then(async (patch): Promise<RenderedDiff> => {
-          if (patch.trim() === "") return { lines: [], gapRows: [] };
+          if (patch.trim() === "") return { lines: [], gapRows: [], actions: [] };
           if (renderer === "pierre") {
             const render = this.options.renderPierre ?? renderWithPierre;
-            return render(patch, {
-              width,
-              theme: this.options.pierreTheme,
-              omitFileHeader: preview,
-              showGaps: !preview,
-              expandHint: "e or click: show more · E: whole file",
-            });
+            const contents = await this.fileContents(entry);
+            return render(patch, { width, theme: this.options.pierreTheme, omitFileHeader: preview, contents, expansion });
           }
           const render = this.options.renderDelta ?? ((p: string, w: number, o: DeltaOptions) => renderWithDelta(p, w, this.options.git.root, o));
           const text = await render(patch, width, { omitFileHeader: preview });
-          return { lines: trimBlankStart(parseAnsi(text)), gapRows: [] };
+          return { lines: trimBlankStart(parseAnsi(text)), gapRows: [], actions: [] };
         });
         this.rendered.set(key, cached);
       }
@@ -474,7 +540,30 @@ export class TrailApp {
       }
     }
     const body = patchBody(await this.patchText(entry, context));
-    return { lines: body.map(builtinDiffLine), gapRows: [] };
+    return { lines: body.map(builtinDiffLine), gapRows: [], actions: [] };
+  }
+
+  /**
+   * Returns the complete file before and after an entry, for revealing hidden lines.
+   * An added file has empty old contents, and a deleted file has empty new contents.
+   * Returns `undefined` when Git cannot read either version.
+   */
+  private fileContents(entry: Entry): Promise<{ old: string; new: string } | undefined> {
+    const key = entryKey(entry);
+    let cached = this.contents.get(key);
+    if (!cached) {
+      const first = entry.changes[0]!;
+      const last = entry.changes[entry.changes.length - 1]!;
+      const parent = this.options.model.commits.get(entry.firstOid)?.parents[0];
+      const read = async () => {
+        const old = first.status === "A" || !parent ? "" : await this.options.git.fileAt(parent, first.oldPath ?? first.path);
+        const next = last.status === "D" ? "" : await this.options.git.fileAt(entry.lastOid, last.path);
+        return old === null || next === null ? undefined : { old, new: next };
+      };
+      cached = read();
+      this.contents.set(key, cached);
+    }
+    return cached;
   }
 
   // ----- Rendering -----
@@ -508,6 +597,12 @@ export class TrailApp {
       return;
     }
     this.historyText.content = toStyled(this.historyLines(current, layout.historyInner.width, layout.historyInner.height));
+    const shownKey = `${current.file.path}:${entryKey(current.entry)}`;
+    if (shownKey !== this.previewKey) {
+      this.previewKey = shownKey;
+      this.previewScroll = 0;
+    }
+    this.visibleDiff = null;
 
     if (this.view === "diff") {
       this.detailBox.title = ` DIFF ${current.entry.label} ${current.file.path} `;
@@ -518,10 +613,10 @@ export class TrailApp {
       });
     } else {
       this.detailBox.title = " SELECTED CHANGE ";
-      this.detailText.content = toStyled(this.detailLines(current, null, [], layout.detailInner.width, layout.detailInner.height));
+      this.detailText.content = toStyled(this.detailLines(current, null, null, layout.detailInner.width, layout.detailInner.height));
       void Promise.all([this.analyses(current.entry), this.styledDiff(current.entry, layout.detailInner.width, "preview")]).then(([analyses, preview]) => {
         if (token !== this.renderToken) return;
-        this.detailText.content = toStyled(this.detailLines(current, analyses, preview.lines, layout.detailInner.width, layout.detailInner.height));
+        this.detailText.content = toStyled(this.detailLines(current, analyses, preview, layout.detailInner.width, layout.detailInner.height));
       });
     }
   }
@@ -552,7 +647,7 @@ export class TrailApp {
     if (this.searching) return [span(" Search: ", { fg: theme.accent }), span(this.query + "▏"), span("   Enter keep  Esc clear", { fg: theme.muted })];
     if (this.status) return [span(` ${this.status}`, { fg: theme.warning })];
     if (this.view === "diff") return [span(" j/k Scroll  d/u Page  h/l Change  e/E Expand  t Renderer  D Pager  o tuicr PR  O tuicr commit  Esc Back  q Quit", { fg: theme.muted })];
-    const hints = " j/k Files  h/l Timeline  Enter Diff  p PR/commit  o tuicr  / Search  r Report  y Copy  ? Help  q Quit";
+    const hints = " j/k Files  h/l Timeline  Enter Diff  J/K Preview  e/E Expand  p PR/commit  o tuicr  / Search  r Report  y Copy  ? Help  q Quit";
     return [span(hints + (this.query ? `   [filter: ${this.query}]` : ""), { fg: theme.muted })];
   }
 
@@ -677,7 +772,7 @@ export class TrailApp {
   private detailLines(
     current: NonNullable<ReturnType<TrailApp["currentEntry"]>>,
     analyses: ChangeAnalysis[] | null,
-    preview: Line[],
+    preview: RenderedDiff | null,
     width: number,
     height: number,
   ): Line[] {
@@ -758,30 +853,48 @@ export class TrailApp {
       lines.push([span(`Same patch also in: ${attribution.equivalents.map((e) => `${e.pr === null ? "?" : `#${e.pr}`} ${e.oid.slice(0, 7)}`).join(", ")}`, { fg: theme.warning })]);
     }
 
-    const room = height - lines.length - 1;
-    if (preview.length > 0 && room > 1) {
+    if (preview && preview.lines.length > 0 && height - lines.length > 2) {
       lines.push([]);
-      const shown = preview.slice(0, room - 1);
-      lines.push(...shown);
-      const hidden = preview.length - shown.length;
-      if (hidden > 0) lines.push([span(`… ${hidden} more line${hidden === 1 ? "" : "s"}. Press Enter for the full diff.`, { fg: theme.muted })]);
+      lines.push(...this.scrolledPreview(entry, preview, height - lines.length, lines.length));
     }
     return lines.slice(0, height).map((line) => fit(line, width));
   }
 
+  /**
+   * Returns the visible part of the preview diff for `room` panel rows, starting at panel row `top`.
+   * A marker row replaces the first or last visible row when lines are scrolled out of view.
+   */
+  private scrolledPreview(entry: Entry, preview: RenderedDiff, room: number, top: number): Line[] {
+    const total = preview.lines.length;
+    if (total <= room) this.previewScroll = 0;
+    else this.previewScroll = Math.min(this.previewScroll, total - (room - 1));
+    const scroll = this.previewScroll;
+    const showTop = scroll > 0;
+    let body = room - (showTop ? 1 : 0);
+    const showBottom = scroll + body < total;
+    if (showBottom) body -= 1;
+    const out: Line[] = [];
+    if (showTop) out.push([span(`↑ ${scroll} line${scroll === 1 ? "" : "s"} above · scroll or K`, { fg: theme.muted })]);
+    this.visibleDiff = { row0: top + out.length, scroll, actions: preview.actions };
+    out.push(...preview.lines.slice(scroll, scroll + body));
+    const below = total - scroll - body;
+    if (showBottom) out.push([span(`↓ ${below} line${below === 1 ? "" : "s"} below · scroll or J · Enter for the full diff · ${this.contextLabel(entry, "preview")}`, { fg: theme.muted })]);
+    return out;
+  }
+
   private diffLines(entry: Entry, rendered: RenderedDiff, width: number, height: number): Line[] {
     const diff = rendered.lines;
-    const context = this.contextFor(entry);
     const header: Line = [
       span(`${entry.label} `, { fg: theme.pr, bold: true }),
       span(entry.changes.length === 1 ? entry.lastOid.slice(0, 7) : `${entry.firstOid.slice(0, 7)}..${entry.lastOid.slice(0, 7)}`, { fg: theme.accent }),
       span(`  ${this.options.model.commits.get(entry.lastOid)?.subject ?? ""}`, { fg: theme.muted }),
-      span(`  [${RENDERER_NAMES[this.diffRenderer]} · ${context === WHOLE_FILE ? "whole file" : `${context} context line${context === 1 ? "" : "s"}`}]`, { fg: theme.muted }),
+      span(`  [${RENDERER_NAMES[this.diffRenderer]} · ${this.contextLabel(entry, "full")}]`, { fg: theme.muted }),
     ];
     const room = Math.max(1, height - 2);
     const maxScroll = Math.max(0, diff.length - room);
     this.diffScroll = Math.min(this.diffScroll, maxScroll);
-    this.visibleDiff = { scroll: this.diffScroll, gapRows: rendered.gapRows };
+    // The header line is panel row 0, so the first diff line is row 1.
+    this.visibleDiff = { row0: 1, scroll: this.diffScroll, actions: rendered.actions };
     const body = diff.slice(this.diffScroll, this.diffScroll + room);
     const position: Line = [span(diff.length === 0 ? "No text diff." : `Lines ${this.diffScroll + 1}-${Math.min(diff.length, this.diffScroll + room)} of ${diff.length}`, { fg: theme.muted })];
     return [header, ...body, position].map((line) => fit(line, width));
@@ -793,10 +906,11 @@ export class TrailApp {
       ["j / k", "Select the next or previous file"],
       ["h / l", "Move backward or forward through the file's changes"],
       ["Enter", "Show the full diff of the selected change"],
-      ["e", "In the diff view, show 10 more unchanged lines around each change (or click a ⋯ row)"],
-      ["E", "In the diff view, show the whole file, or return to the changes"],
+      ["e", "Show 10 more hidden lines at each end of every hidden region, in the preview or the diff view"],
+      ["E", "Show the whole file, or return to the changes, in the preview or the diff view"],
+      ["J / K", "Scroll the preview in the selected change panel"],
       ["t", "In the diff view, switch the diff renderer: pierre, delta (if installed), built-in"],
-      ["mouse", "Click a file or a listed commit to select it, click the change panel to open the diff, scroll the diff"],
+      ["mouse", "Click a file or a listed commit to select it, click a Show action on a ⋯ row to reveal hidden lines, click the change panel to open the diff, scroll the preview or the diff"],
       ["D", "Open the selected diff in a pager: delta in delta mode, Git's pager otherwise"],
       ["Esc", "Return to the file history, or clear the search"],
       ["p", "Switch between the commit timeline and the PR timeline"],
@@ -915,8 +1029,6 @@ export function compactDiff(lines: string[], context: number): string[] {
 
 const RENDERER_NAMES: Record<DiffRenderer, string> = { delta: "delta", pierre: "pierre", builtin: "built-in" };
 
-/** Context lines that `e` adds. */
-const EXPAND_STEP = 10;
 /** Context line count that makes Git include every line of the file. */
 const WHOLE_FILE = 1_000_000;
 

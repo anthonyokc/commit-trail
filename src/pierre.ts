@@ -1,8 +1,35 @@
-import { getFiletypeFromFileName, getSharedHighlighter, parsePatchFiles, renderDiffWithHighlighter, type FileDiffMetadata } from "@pierre/diffs";
-import { describeGap, describeHunk } from "./hunk.ts";
+import {
+  getFiletypeFromFileName,
+  getSharedHighlighter,
+  parsePatchFiles,
+  processFile,
+  renderDiffWithHighlighter,
+  type FileDiffMetadata,
+} from "@pierre/diffs";
+import { describeHunk } from "./hunk.ts";
 import { fit, span, type Line, type Span } from "./tui/styled.ts";
 
 export const DEFAULT_PIERRE_THEME = "pierre-dark";
+
+/** Lines that one "Show" action reveals. */
+export const EXPAND_STEP = 10;
+
+/**
+ * Reveals lines in a hidden region. `down` reveals the region's first lines, continuing down from the
+ * change above the region. `up` reveals its last lines, continuing up from the change below it.
+ * `all` reveals the whole region.
+ */
+export type GapAction = "down" | "up" | "all";
+
+/** How far each hidden region is revealed. Regions are numbered from the start of the file. */
+export interface Expansion {
+  /** Lines added to both ends of every hidden region. */
+  all: number;
+  /** Lines revealed per region, from its start (`down`) and from its end (`up`). */
+  gaps: Map<number, { down: number; up: number }>;
+  /** Reveal every hidden line. */
+  whole: boolean;
+}
 
 export interface PierreOptions {
   /** Columns available for the diff. */
@@ -13,21 +40,34 @@ export interface PierreOptions {
   layout?: "auto" | "unified" | "split";
   /** Omit the file name header, for panels that already name the file. */
   omitFileHeader?: boolean;
-  /** Text after the hidden-line count on separator rows, for example "e: show more". */
-  expandHint?: string;
-  /** Show a separator row for hidden unchanged lines before a hunk. Defaults to true. */
-  showGaps?: boolean;
+  /**
+   * Complete old and new contents of the patch's file. With them, hidden regions can be revealed,
+   * and the region after the last change is shown. Without them, a hidden region shows only its size.
+   */
+  contents?: { old: string; new: string };
+  expansion?: Expansion;
 }
 
-/** Rendered diff lines plus the indexes of separator rows that stand for hidden unchanged lines. */
+/** A clickable action on a hidden-region row: the row, its column range, the region, and the action. */
+export interface DiffAction {
+  row: number;
+  start: number;
+  end: number;
+  gap: number;
+  action: GapAction;
+}
+
+/** Rendered diff lines, the rows that stand for hidden lines, and the clickable actions on those rows. */
 export interface RenderedDiff {
   lines: Line[];
   gapRows: number[];
+  actions: DiffAction[];
 }
 
 interface Palette {
   fg: string;
   muted: string;
+  link: string;
   addedBg: string;
   addedEmphasisBg: string;
   addedSign: string;
@@ -46,37 +86,57 @@ interface HastNode {
   children?: HastNode[];
 }
 
+/** One row of the diff before layout. Indexes point into the highlighted old and new lines. */
+type Row =
+  | { kind: "heading"; text: string; context: string }
+  | { kind: "gap"; gap: number; hidden: number; actions: GapAction[] }
+  | { kind: "context"; oldIndex: number; newIndex: number; oldNo: number; newNo: number }
+  | { kind: "change"; deletions: { index: number; no: number }[]; additions: { index: number; no: number }[] };
+
 const SPLIT_MIN_WIDTH = 120;
+const NO_EXPANSION: Expansion = { all: 0, gaps: new Map(), whole: false };
 
 /**
  * Renders a unified diff with @pierre/diffs and Shiki syntax highlighting, as styled terminal lines.
  * @pierre/diffs parses the patch and highlights each line, including word-level changes.
- * This function lays out the lines with line numbers, in unified or split columns.
+ * This function lays out the lines with line numbers and +/- markers, in unified or split columns.
  * An unknown file type renders as plain text. An unknown theme throws an error.
  */
 export async function renderWithPierre(patch: string, options: PierreOptions): Promise<RenderedDiff> {
   const theme = options.theme ?? DEFAULT_PIERRE_THEME;
-  const files = parsePatchFiles(patch, undefined, true).flatMap((parsed) => parsed.files);
+  let files = parsePatchFiles(patch, undefined, true).flatMap((parsed) => parsed.files);
+  const full = options.contents !== undefined && files.length === 1;
+  if (full) {
+    const parsed = files[0]!;
+    const hydrated = processFile(patch, {
+      oldFile: { name: parsed.prevName ?? parsed.name, contents: options.contents!.old },
+      newFile: { name: parsed.name, contents: options.contents!.new },
+      isGitDiff: true,
+      throwOnError: true,
+    });
+    if (hydrated) files = [hydrated];
+  }
   const split = options.layout === "split" || ((options.layout ?? "auto") === "auto" && options.width >= SPLIT_MIN_WIDTH);
-  const out: RenderedDiff = { lines: [], gapRows: [] };
+  const out: RenderedDiff = { lines: [], gapRows: [], actions: [] };
 
   for (const file of files) {
     const lang = getFiletypeFromFileName(file.name);
     const highlighter = await getSharedHighlighter({ themes: [theme], langs: [lang] });
-    const result = renderDiffWithHighlighter(file, highlighter, {
-      theme,
-      useTokenTransformer: false,
-      tokenizeMaxLineLength: 1000,
-      lineDiffType: "word-alt",
-      maxLineDiffLength: 1000,
-    });
+    const result = renderDiffWithHighlighter(
+      file,
+      highlighter,
+      { theme, useTokenTransformer: false, tokenizeMaxLineLength: 1000, lineDiffType: "word-alt", maxLineDiffLength: 1000 },
+      { forcePlainText: false, expandedHunks: full ? true : undefined },
+    );
     const palette = paletteFrom(result.themeStyles);
-    const tokens = {
-      deletion: (index: number) => toSpans(result.code.deletionLines[index] as HastNode | undefined, palette.fg),
-      addition: (index: number) => toSpans(result.code.additionLines[index] as HastNode | undefined, palette.fg),
+    const tokens: TokenSource = {
+      deletion: (index) => toSpans(result.code.deletionLines[index] as HastNode | undefined, palette.fg),
+      addition: (index) => toSpans(result.code.additionLines[index] as HastNode | undefined, palette.fg),
     };
     if (!options.omitFileHeader) out.lines.push(...fileHeader(file, palette, options.width));
-    (split ? layoutSplit : layoutUnified)(file, tokens, palette, options, out);
+    const rows = buildRows(file, full, options.expansion ?? NO_EXPANSION);
+    const digits = String(Math.max(1, full ? file.additionLines.length : 0, ...file.hunks.map((h) => h.additionStart + h.additionCount))).length;
+    layout(rows, { tokens, palette, width: options.width, digits, split }, out);
   }
   return out;
 }
@@ -89,92 +149,147 @@ function fileHeader(file: FileDiffMetadata, palette: Palette, width: number): Li
   return [fit([span(`${name}${kind}`, { fg: palette.header, bold: true })], width), fit([span("─".repeat(width), { fg: palette.muted })], width)];
 }
 
-/**
- * Adds the rows before a hunk: a separator for hidden unchanged lines, when there are any,
- * and a heading such as "Lines 12–14 · tar_option_set(".
- */
-function pushHunkHeading(hunk: FileDiffMetadata["hunks"][number], palette: Palette, options: PierreOptions, out: RenderedDiff): void {
-  if (hunk.collapsedBefore > 0 && options.showGaps !== false) {
-    out.gapRows.push(out.lines.length);
-    out.lines.push(
-      fit([span(describeGap(hunk.collapsedBefore), { fg: palette.muted }), span(options.expandHint ? `   ${options.expandHint}` : "", { fg: palette.muted, dim: true })], options.width),
-    );
+/** Returns the old and new line indexes just after a hunk's last line. */
+function hunkEnd(hunk: FileDiffMetadata["hunks"][number]): { old: number; new: number } {
+  let end = { old: hunk.deletionLineIndex, new: hunk.additionLineIndex };
+  for (const block of hunk.hunkContent) {
+    const next =
+      block.type === "context"
+        ? { old: block.deletionLineIndex + block.lines, new: block.additionLineIndex + block.lines }
+        : { old: block.deletionLineIndex + block.deletions, new: block.additionLineIndex + block.additions };
+    end = { old: Math.max(end.old, next.old), new: Math.max(end.new, next.new) };
   }
-  const where = describeHunk(hunk.deletionStart, hunk.deletionCount, hunk.additionStart, hunk.additionCount);
-  out.lines.push(fit([span(where, { fg: palette.header, bold: true }), span(hunk.hunkContext ? ` · ${hunk.hunkContext}` : "", { fg: palette.muted })], options.width));
+  return end;
 }
 
-function numberWidth(file: FileDiffMetadata): number {
-  const last = Math.max(1, ...file.hunks.map((hunk) => Math.max(hunk.deletionStart + hunk.deletionCount, hunk.additionStart + hunk.additionCount)));
-  return String(last).length;
-}
+/**
+ * Converts a file diff to rows. A hidden region before each hunk, and after the last hunk with full
+ * contents, becomes revealed context rows plus one row for the lines that stay hidden.
+ * A heading names each hunk that follows hidden lines, and the first hunk.
+ */
+function buildRows(file: FileDiffMetadata, full: boolean, expansion: Expansion): Row[] {
+  const rows: Row[] = [];
+  const contextRow = (oldIndex: number, newIndex: number): Row => ({ kind: "context", oldIndex, newIndex, oldNo: oldIndex + 1, newNo: newIndex + 1 });
 
-function layoutUnified(file: FileDiffMetadata, tokens: TokenSource, palette: Palette, options: PierreOptions, out: RenderedDiff): void {
-  const width = options.width;
-  const digits = numberWidth(file);
-  const blank = " ".repeat(digits);
-  const lines = out.lines;
-  const row = (oldNo: string, newNo: string, sign: string, content: Span[], bg?: string, signColor?: string): Line => {
-    const gutter = [span(`${oldNo} ${newNo} `, { fg: palette.muted, bg }), span(sign, { fg: signColor ?? palette.muted, bg })];
-    return fit([...gutter, ...content.map((part) => ({ ...part, bg: part.bg ?? bg }))], width, bg ? { bg } : undefined);
+  /** Adds a hidden region's rows and returns how many of its lines stay hidden. */
+  const addGap = (gap: number, hidden: number, oldStart: number, newStart: number, position: "first" | "middle" | "last") => {
+    if (hidden <= 0) return { remaining: 0, up: 0 };
+    if (!full) {
+      rows.push({ kind: "gap", gap, hidden, actions: [] });
+      return { remaining: hidden, up: 0 };
+    }
+    // The region at the file start has no change before it, so only its end can be revealed. The region at
+    // the file end has no change after it, so only its start can be revealed.
+    const state = expansion.gaps.get(gap) ?? { down: 0, up: 0 };
+    const down = expansion.whole ? hidden : position === "first" ? 0 : Math.min(hidden, state.down + expansion.all);
+    const up = expansion.whole ? 0 : position === "last" ? 0 : Math.min(hidden - down, state.up + expansion.all);
+    const remaining = hidden - down - up;
+    for (let k = 0; k < down; k++) rows.push(contextRow(oldStart + k, newStart + k));
+    if (remaining > 0) {
+      const actions: GapAction[] =
+        remaining <= EXPAND_STEP ? ["all"] : [...(position !== "first" ? (["down"] as const) : []), ...(position !== "last" ? (["up"] as const) : []), "all"];
+      rows.push({ kind: "gap", gap, hidden: remaining, actions });
+    }
+    for (let k = hidden - up; k < hidden; k++) rows.push(contextRow(oldStart + k, newStart + k));
+    return { remaining, up };
   };
 
-  for (const hunk of file.hunks) {
-    pushHunkHeading(hunk, palette, options, out);
-    let oldLine = hunk.deletionStart;
-    let newLine = hunk.additionStart;
+  let end = { old: 0, new: 0 };
+  file.hunks.forEach((hunk, index) => {
+    const position = index === 0 ? "first" : "middle";
+    const { remaining, up } = addGap(index, hunk.collapsedBefore, end.old, end.new, position);
+    if (remaining > 0 || (index === 0 && hunk.collapsedBefore === 0)) {
+      // The heading covers the revealed lines above the hunk too, so it sits above them.
+      const heading: Row = {
+        kind: "heading",
+        text: describeHunk(hunk.deletionStart - up, hunk.deletionCount + up, hunk.additionStart - up, hunk.additionCount + up),
+        context: hunk.hunkContext ?? "",
+      };
+      rows.splice(rows.length - up, 0, heading);
+    }
+    let oldNo = hunk.deletionStart;
+    let newNo = hunk.additionStart;
     for (const block of hunk.hunkContent) {
       if (block.type === "context") {
-        for (let i = 0; i < block.lines; i++) {
-          lines.push(row(String(oldLine++).padStart(digits), String(newLine++).padStart(digits), "  ", emphasize(tokens.addition(block.additionLineIndex + i), undefined)));
+        for (let k = 0; k < block.lines; k++) {
+          rows.push({ kind: "context", oldIndex: block.deletionLineIndex + k, newIndex: block.additionLineIndex + k, oldNo: oldNo++, newNo: newNo++ });
         }
       } else {
-        for (let i = 0; i < block.deletions; i++) {
-          const content = emphasize(tokens.deletion(block.deletionLineIndex + i), palette.removedEmphasisBg);
-          lines.push(row(String(oldLine++).padStart(digits), blank, "- ", content, palette.removedBg, palette.removedSign));
-        }
-        for (let i = 0; i < block.additions; i++) {
-          const content = emphasize(tokens.addition(block.additionLineIndex + i), palette.addedEmphasisBg);
-          lines.push(row(blank, String(newLine++).padStart(digits), "+ ", content, palette.addedBg, palette.addedSign));
-        }
+        rows.push({
+          kind: "change",
+          deletions: Array.from({ length: block.deletions }, (_, k) => ({ index: block.deletionLineIndex + k, no: oldNo++ })),
+          additions: Array.from({ length: block.additions }, (_, k) => ({ index: block.additionLineIndex + k, no: newNo++ })),
+        });
       }
     }
-  }
+    end = hunkEnd(hunk);
+  });
+  if (full && file.hunks.length > 0) addGap(file.hunks.length, file.additionLines.length - end.new, end.old, end.new, "last");
+  return rows;
 }
 
-function layoutSplit(file: FileDiffMetadata, tokens: TokenSource, palette: Palette, options: PierreOptions, out: RenderedDiff): void {
-  const width = options.width;
-  const digits = numberWidth(file);
+interface LayoutContext {
+  tokens: TokenSource;
+  palette: Palette;
+  width: number;
+  digits: number;
+  split: boolean;
+}
+
+function gapLine(row: Extract<Row, { kind: "gap" }>, palette: Palette, width: number, rowIndex: number, out: RenderedDiff): Line {
+  const line: Line = [span(`⋯ ${row.hidden} hidden line${row.hidden === 1 ? "" : "s"}`, { fg: palette.muted })];
+  let column = line[0]!.text.length;
+  for (const action of row.actions) {
+    const label =
+      action === "down" ? `↓ Show ${EXPAND_STEP} lines below` : action === "up" ? `↑ Show ${EXPAND_STEP} lines above` : row.actions.length === 1 ? `Show ${row.hidden} line${row.hidden === 1 ? "" : "s"}` : `Show all ${row.hidden}`;
+    line.push(span("   "));
+    column += 3;
+    out.actions.push({ row: rowIndex, start: column, end: column + label.length, gap: row.gap, action });
+    line.push(span(label, { fg: palette.link, underline: true }));
+    column += label.length;
+  }
+  return fit(line, width);
+}
+
+function layout(rows: Row[], context: LayoutContext, out: RenderedDiff): void {
+  const { tokens, palette, width, digits, split } = context;
+  const num = (n: number | null) => (n === null ? " ".repeat(digits) : String(n).padStart(digits));
   const half = Math.floor((width - 1) / 2);
-  const lines = out.lines;
-  const cell = (number: number, content: Span[], sign: " " | "-" | "+", bg?: string): Line => {
-    const signColor = sign === "-" ? palette.removedSign : sign === "+" ? palette.addedSign : palette.muted;
-    const gutter = [span(`${String(number).padStart(digits)} `, { fg: palette.muted, bg }), span(`${sign} `, { fg: signColor, bg })];
-    return fit([...gutter, ...content.map((part) => ({ ...part, bg: part.bg ?? bg }))], half, bg ? { bg } : {});
-  };
   const divider = span("│", { fg: palette.muted });
 
-  for (const hunk of file.hunks) {
-    pushHunkHeading(hunk, palette, options, out);
-    let oldLine = hunk.deletionStart;
-    let newLine = hunk.additionStart;
-    for (const block of hunk.hunkContent) {
-      if (block.type === "context") {
-        for (let i = 0; i < block.lines; i++) {
-          lines.push([
-            ...cell(oldLine++, emphasize(tokens.deletion(block.deletionLineIndex + i), undefined), " "),
-            divider,
-            ...cell(newLine++, emphasize(tokens.addition(block.additionLineIndex + i), undefined), " "),
-          ]);
-        }
-      } else {
-        const rows = Math.max(block.deletions, block.additions);
-        for (let i = 0; i < rows; i++) {
-          const left = i < block.deletions ? cell(oldLine++, emphasize(tokens.deletion(block.deletionLineIndex + i), palette.removedEmphasisBg), "-", palette.removedBg) : fit([], half, {});
-          const right = i < block.additions ? cell(newLine++, emphasize(tokens.addition(block.additionLineIndex + i), palette.addedEmphasisBg), "+", palette.addedBg) : fit([], half, {});
-          lines.push([...left, divider, ...right]);
-        }
+  const unifiedRow = (oldNo: number | null, newNo: number | null, sign: " " | "-" | "+", content: Span[], bg?: string): Line => {
+    const signColor = sign === "-" ? palette.removedSign : sign === "+" ? palette.addedSign : palette.muted;
+    const gutter = [span(`${num(oldNo)} ${num(newNo)} `, { fg: palette.muted, bg }), span(`${sign} `, { fg: signColor, bg })];
+    return fit([...gutter, ...content.map((part) => ({ ...part, bg: part.bg ?? bg }))], width, bg ? { bg } : undefined);
+  };
+  const cell = (number: number, content: Span[], sign: " " | "-" | "+", bg?: string): Line => {
+    const signColor = sign === "-" ? palette.removedSign : sign === "+" ? palette.addedSign : palette.muted;
+    const gutter = [span(`${num(number)} `, { fg: palette.muted, bg }), span(`${sign} `, { fg: signColor, bg })];
+    return fit([...gutter, ...content.map((part) => ({ ...part, bg: part.bg ?? bg }))], half, bg ? { bg } : {});
+  };
+
+  for (const row of rows) {
+    if (row.kind === "heading") {
+      out.lines.push(fit([span(row.text, { fg: palette.header, bold: true }), span(row.context ? ` · ${row.context}` : "", { fg: palette.muted })], width));
+    } else if (row.kind === "gap") {
+      out.gapRows.push(out.lines.length);
+      out.lines.push(gapLine(row, palette, width, out.lines.length, out));
+    } else if (row.kind === "context") {
+      const oldTokens = emphasize(tokens.deletion(row.oldIndex), undefined);
+      const newTokens = emphasize(tokens.addition(row.newIndex), undefined);
+      out.lines.push(split ? [...cell(row.oldNo, oldTokens, " "), divider, ...cell(row.newNo, newTokens, " ")] : unifiedRow(row.oldNo, row.newNo, " ", newTokens));
+    } else if (split) {
+      const count = Math.max(row.deletions.length, row.additions.length);
+      for (let k = 0; k < count; k++) {
+        const del = row.deletions[k];
+        const add = row.additions[k];
+        const left = del ? cell(del.no, emphasize(tokens.deletion(del.index), palette.removedEmphasisBg), "-", palette.removedBg) : fit([], half, {});
+        const right = add ? cell(add.no, emphasize(tokens.addition(add.index), palette.addedEmphasisBg), "+", palette.addedBg) : fit([], half, {});
+        out.lines.push([...left, divider, ...right]);
       }
+    } else {
+      for (const del of row.deletions) out.lines.push(unifiedRow(del.no, null, "-", emphasize(tokens.deletion(del.index), palette.removedEmphasisBg), palette.removedBg));
+      for (const add of row.additions) out.lines.push(unifiedRow(null, add.no, "+", emphasize(tokens.addition(add.index), palette.addedEmphasisBg), palette.addedBg));
     }
   }
 }
@@ -220,6 +335,7 @@ function paletteFrom(themeStyles: string): Palette {
   return {
     fg,
     muted: mix(bg, fg, 0.45),
+    link: read("--diffs-modified-color") ?? "#58a6ff",
     addedBg: mix(bg, added, 0.18),
     addedEmphasisBg: mix(bg, added, 0.4),
     addedSign: added,

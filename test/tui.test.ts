@@ -93,7 +93,7 @@ test("delta renders the preview and the full diff, t switches renderers, and D o
       expect(patch).toContain("diff --git a/R/clean.R b/R/clean.R");
       return options.omitFileHeader ? "\x1b[34mDELTA PREVIEW LINE\x1b[0m\n" : "\x1b[48;2;0;40;0mDELTA FULL LINE\x1b[0m\n";
     },
-    renderPierre: async () => ({ lines: [[{ text: "PIERRE RENDERED LINE" }]], gapRows: [] }),
+    renderPierre: async () => ({ lines: [[{ text: "PIERRE RENDERED LINE" }]], gapRows: [], actions: [] }),
   });
   await setup.mockInput.pressKey("l");
   let frame = await frameWith("DELTA PREVIEW LINE");
@@ -153,30 +153,55 @@ test("the interface falls back to the built-in renderer when delta fails", async
   await setup.dispose();
 });
 
-test("the pierre diff view expands context with e, a click on a separator row, and E", async () => {
+test("the pierre diff view reveals hidden lines with a click on Show, E, and e", async () => {
   const { setup, frameWith } = await startApp({ diffRenderer: "pierre", contextLines: 1 });
   await frameWith("Later changes:   #4");
   await setup.mockInput.pressEnter();
 
-  // The change is on line 6. One context line shows lines 5-7 and hides lines 1-4.
-  let frame = await frameWith("⋯ 4 unchanged lines");
+  // The change is on line 6 of a 12-line file. One context line shows lines 5-7 and hides 1-4 and 8-12.
+  let frame = await frameWith("⋯ 4 hidden lines   Show 4 lines");
   expect(frame).toContain("[pierre · 1 context line]");
-  expect(frame).toContain("Lines 5–7");
+  expect(frame).toContain("⋯ 5 hidden lines   Show 5 lines");
   expect(frame).not.toContain("@@");
 
-  const row = frame.split("\n").findIndex((line) => line.includes("⋯ 4 unchanged lines"));
-  await setup.mockMouse.click(10, row);
-  frame = await frameWith("[pierre · 11 context lines]");
-  expect(frame).not.toContain("⋯");
-  expect(frame).toContain("Lines 1–12");
+  const rows = frame.split("\n");
+  const row = rows.findIndex((line) => line.includes("⋯ 4 hidden lines"));
+  await setup.mockMouse.click(rows[row]!.indexOf("Show 4 lines") + 2, row);
+  frame = await frameWith("[pierre · 1 context line, expanded]");
+  expect(frame).not.toContain("⋯ 4 hidden lines");
+  expect(frame).toContain("⋯ 5 hidden lines");
+  expect(frame).toContain(" 1  1   line 1");
 
   await setup.mockInput.pressKey("E", { shift: true });
   frame = await frameWith("[pierre · whole file]");
+  expect(frame).not.toContain("⋯");
   await setup.mockInput.pressKey("E", { shift: true });
-  frame = await frameWith("[pierre · 1 context line]");
-
+  frame = await frameWith("[pierre · 1 context line, expanded]");
   await setup.mockInput.pressKey("e");
-  frame = await frameWith("[pierre · 11 context lines]");
+  frame = await frameWith("Showing 10 more lines");
+  expect(frame).not.toContain("⋯");
+  await setup.dispose();
+});
+
+test("the preview reveals hidden lines on click, expands with E, and scrolls with J and K", async () => {
+  const { setup, frameWith } = await startApp({ diffRenderer: "pierre", previewContextLines: 2 });
+  // Two context lines show lines 4-8 and hide 1-3 and 9-12.
+  let frame = await frameWith("⋯ 3 hidden lines   Show 3 lines");
+  const rows = frame.split("\n");
+  const row = rows.findIndex((line) => line.includes("⋯ 3 hidden lines"));
+  await setup.mockMouse.click(rows[row]!.indexOf("Show 3 lines") + 2, row);
+  frame = await frameWith(" 1  1   line 1");
+  expect(frame).not.toContain("⋯ 3 hidden lines");
+  // The click revealed lines in the preview without opening the full diff view.
+  expect(frame).toContain("SELECTED CHANGE");
+
+  await setup.mockInput.pressKey("E", { shift: true });
+  frame = await frameWith("lines below · scroll or J");
+  await setup.mockInput.pressKey("J", { shift: true });
+  frame = await frameWith("↑ 3 lines above · scroll or K");
+  await setup.mockInput.pressKey("K", { shift: true });
+  frame = await frameWith("lines below · scroll or J");
+  expect(frame).not.toContain("lines above");
   await setup.dispose();
 });
 
