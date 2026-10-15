@@ -158,11 +158,9 @@ The `r` and `R` keys write reports to the system temporary directory, in `commit
 
 ### Diffs and delta
 
-The selected change panel always shows a short built-in preview: hunk headers, changed lines, and one unchanged line on each side.
+The selected change panel shows a short preview of the diff, with one unchanged line on each side of each change. The full diff view (`Enter`) shows three unchanged lines. Both use one of two renderers:
 
-The full diff view (`Enter`) uses one of two renderers:
-
-- delta: commit-trail sends the patch to `delta --paging=never` at the panel's width and shows delta's colored output in the panel. delta reads its settings from your Git config, so options such as `side-by-side`, `line-numbers`, and `features` apply. `h`/`l` and scrolling keep working.
+- delta: commit-trail sends the patch to `delta --paging=never` at the panel's width and shows delta's colored output in the panel. delta reads its settings from your Git config, so options such as `side-by-side`, `line-numbers`, and `features` apply. The preview omits delta's file header, because the panel already names the file. `h`/`l` and scrolling keep working.
 - built-in: commit-trail colors the unified diff itself.
 
 By default (`auto`), commit-trail uses delta if delta is installed. To choose a renderer, set `diff` in the config file or start commit-trail with `--diff`. Press `t` to switch renderers while commit-trail runs. If delta exits with an error, commit-trail shows the built-in diff and the error in the footer.
