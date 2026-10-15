@@ -15,9 +15,10 @@ The file is the main unit of navigation. You select a file, step through the com
 │   rate_limit.ts         1  ││                                                                │
 │ src/lib/                   ││   ● #1 ──◉ #4 ──● #10                                          │
 │ › cache.ts              3  ││                                                                │
-│                            ││    1  #1    6c529ec  Modified  +1 -1  add per-route rate limi… │
-│                            ││ ›  2  #4    3d00576  Modified  +1 -1  read cache TTL from con… │
-│                            ││    3  #10   d618483  Modified  +1 -1  split cache eviction in… │
+│                            ││    1  #1    a4b2880  Modified  +1 -1  add per-route rate limi… │
+│                            ││ ›  2  #4    35d7d77  Modified  +1 -1  read cache TTL from con… │
+│                            ││    3  #10   5771ec0  Modified  +1 -1  split cache eviction in… │
+│                            ││                                                                │
 │                            ││                                                                │
 │                            ││                                                                │
 │                            ││                                                                │
@@ -26,18 +27,19 @@ The file is the main unit of navigation. You select a file, step through the com
 └────────────────────────────┘└────────────────────────────────────────────────────────────────┘
 ┌─ SELECTED CHANGE ────────────────────────────────────────────────────────────────────────────┐
 │ PR #4: fix(cache): read the TTL from config  open  @author                                   │
-│ Commit: 3d00576  read cache TTL from config  2026-10-14                                      │
+│ Commit: 35d7d77  read cache TTL from config  2026-10-15                                      │
 │ File: src/lib/cache.ts  Modified, +1 -1                                                      │
 │ Hunk context: import { config } from "../config";                                            │
-│ Revises: replaces 1 line(s) from #1 6c529ec                                                  │
-│ Earlier changes: #1 6c529ec                                                                  │
-│ Later changes:   #10 d618483                                                                 │
+│ Revises: replaces 1 line(s) from #1 a4b2880                                                  │
+│ Earlier changes: #1 a4b2880                                                                  │
+│ Later changes:   #10 5771ec0                                                                 │
 │                                                                                              │
-│ @@ -3,7 +3,7 @@ import { config } from "../config";                                          │
-│  export function ttlFor(key: string): number {                                               │
-│ -  return 60;                                                                                │
-│ +  return config.cacheTtl;                                                                   │
-│ … 1 more line. Press Enter for the full diff.                                                │
+│ Lines 4–8 · const store = new Map<string, Entry>();                                          │
+│ 4 4                                                                                          │
+│ 5 5   export function ttlFor(key: string): number {                                          │
+│ 6   -   return 60;                                                                           │
+│   6 +   return config.cacheTtl;                                                              │
+│ … 2 more lines. Press Enter for the full diff.                                               │
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k Files  h/l Timeline  Enter Diff  p PR/commit  o tuicr  / Search  r Report  y Copy  ? Help …
 ```
@@ -136,7 +138,9 @@ With one PR number, commit-trail runs in focus mode. The file list shows only th
 | `j` / `k` | Select the next or previous file |
 | `h` / `l` | Move backward or forward through the selected file's changes |
 | `Enter` | Show the full diff of the selected change |
-| `t` | In the diff view, switch the diff renderer: delta (if installed), pierre, built-in |
+| `e` | In the diff view, show 10 more unchanged lines around each change. A click on a `⋯ N unchanged lines` row does the same |
+| `E` | In the diff view, show the whole file. Press `E` again to return to the changes |
+| `t` | In the diff view, switch the diff renderer: pierre, delta (if installed), built-in |
 | `D` | Open the selected diff in a pager: delta in delta mode, Git's pager otherwise |
 | `Esc` | Return to the file history, or clear the search |
 | `p` | Switch between the commit timeline and the PR timeline |
@@ -150,6 +154,14 @@ With one PR number, commit-trail runs in focus mode. The file list shows only th
 | `?` | Show the key list and the load notes (skipped PRs, stale branches, warnings) |
 | `q` | Quit |
 
+The mouse also works:
+
+- Click a file in the file list to select it.
+- In the selected change panel, click a commit under "Earlier changes", "Later changes", or "Parallel" to select that change. Click elsewhere in the panel to open the full diff view.
+- In the full diff view, click a `⋯ N unchanged lines` row to show more lines, and scroll with the wheel.
+
+While commit-trail captures the mouse, most terminals select text when you hold Shift (Option in iTerm2) while you drag.
+
 The timeline contains only the commits that change the selected file. If a file appears in 30 commits and 4 of them change it, the timeline has 4 nodes. The PR timeline (`p`) combines each PR's commits into one node and shows the combined diff.
 
 Changes on separate branches appear in separate lanes. Git defines no order between lanes, so the "Parallel" line lists those changes separately from earlier and later changes.
@@ -158,15 +170,19 @@ The `r` and `R` keys write reports to the system temporary directory, in `commit
 
 ### Diffs
 
-The selected change panel shows a short preview of the diff, with one unchanged line on each side of each change. The full diff view (`Enter`) shows three unchanged lines. Both use one of three renderers:
+The selected change panel shows a short preview of the diff, with 2 unchanged lines around each change. The full diff view (`Enter`) shows 5 unchanged lines. The `preview_context_lines` and `context_lines` settings change these numbers. In the full diff view, `e` adds 10 lines and `E` shows the whole file.
 
-- delta: commit-trail sends the patch to `delta --paging=never` at the panel's width and shows delta's colored output in the panel. delta reads its settings from your Git config, so options such as `side-by-side`, `line-numbers`, and `features` apply. This renderer requires delta.
-- pierre: commit-trail parses the patch with [@pierre/diffs](https://diffs.com) and highlights it with [Shiki](https://shiki.style), inside commit-trail. It shows line numbers, tints added and removed lines, and marks the changed words. At 120 columns or more, it shows old and new lines side by side. This renderer needs no other program. The `pierre_theme` setting selects the Shiki theme.
+Instead of Git's `@@ -12,2 +12,3 @@ tar_option_set(` header, each hunk starts with a heading such as `Lines 12–14 · tar_option_set(`. The heading uses the new file's line numbers. The text after `·` is the nearest earlier line that Git recognizes as a function or section name. In the full diff view, a `⋯ 11 unchanged lines` row before the heading counts the hidden lines.
+
+Diffs use one of three renderers:
+
+- pierre (default): commit-trail parses the patch with [@pierre/diffs](https://diffs.com) and highlights it with [Shiki](https://shiki.style), inside commit-trail. It shows line numbers and `+`/`-` markers, tints added and removed lines, and marks the changed words. At 120 columns or more, it shows old and new lines side by side. It needs no other program. The `pierre_theme` setting selects the Shiki theme.
+- delta: commit-trail sends the patch to `delta --paging=never` at the panel's width and shows delta's colored output in the panel. delta reads its settings from your Git config, so options such as `side-by-side`, `line-numbers`, and `features` apply. This renderer requires delta, and it keeps delta's own hunk headers.
 - built-in: commit-trail colors the unified diff without syntax highlighting.
 
-In the preview, delta and pierre omit the file header, because the panel already names the file.
+In the preview, pierre and delta omit the file header, because the panel already names the file.
 
-By default (`auto`), commit-trail uses delta if delta is installed, and pierre otherwise. To choose a renderer, set `diff` in the config file or start commit-trail with `--diff`. Press `t` to switch renderers while commit-trail runs. If delta or pierre fails, commit-trail shows the built-in diff and the error in the footer.
+To choose a renderer, set `diff` in the config file or start commit-trail with `--diff`. Press `t` to switch renderers while commit-trail runs. If pierre or delta fails, commit-trail shows the built-in diff and the error in the footer.
 
 The first pierre diff of each language takes about one second, while Shiki loads the grammar. Later diffs take a few milliseconds.
 
@@ -211,7 +227,8 @@ A report never claims that a later change resolves a review concern. It shows th
 | `--copy` | `report` only: copy the Markdown report to the clipboard |
 | `--max-diff-lines <n>` | Show at most `n` diff lines for each patch in a report. The default is 60 |
 | `--report-dir <path>` | Write reports from the `r` and `R` keys to `<path>` |
-| `--diff <renderer>` | Diff renderer for the preview, the full diff view, and the `D` key: `auto`, `delta`, `pierre`, or `builtin`. This option overrides the config file. `auto` uses delta if it is on `PATH`, and pierre otherwise. `delta` stops with an error if delta is not on `PATH` |
+| `--diff <renderer>` | Diff renderer for the preview, the full diff view, and the `D` key: `pierre`, `delta`, or `builtin`. This option overrides the config file. `delta` stops with an error if delta is not on `PATH` |
+| `--context <n>` | Show `n` unchanged lines around each change in the full diff view. This option overrides the config file |
 | `--config <path>` | Read settings from `<path>` instead of the default config file |
 
 ### Configuration
@@ -219,19 +236,24 @@ A report never claims that a later change resolves a review concern. It shows th
 commit-trail reads settings from `$XDG_CONFIG_HOME/commit-trail/config.toml`. If `XDG_CONFIG_HOME` is not set, the path is `~/.config/commit-trail/config.toml`. If the file does not exist, commit-trail uses the defaults.
 
 ```toml
-# Diff renderer: "auto", "delta", "pierre", or "builtin".
-# "auto" uses delta if it is on PATH, and pierre otherwise.
+# Diff renderer: "pierre", "delta", or "builtin".
 # "delta" stops with an error if delta is not on PATH.
 diff = "pierre"
 
 # Shiki theme for the pierre renderer, for example "catppuccin-mocha" or "github-dark".
-pierre_theme = "pierre-dark"
+pierre_theme = "catppuccin-mocha"
+
+# Unchanged lines around each change: full diff view, then the selected change panel.
+context_lines = 5
+preview_context_lines = 2
 ```
 
 | Setting | Values | Default |
 |---|---|---|
-| `diff` | `"auto"`, `"delta"`, `"pierre"`, `"builtin"` | `"auto"` |
+| `diff` | `"pierre"`, `"delta"`, `"builtin"`. `"auto"` is accepted and means `"pierre"` | `"pierre"` |
 | `pierre_theme` | A [Shiki theme name](https://shiki.style/themes), or `"pierre-dark"` or `"pierre-light"` | `"pierre-dark"` |
+| `context_lines` | A whole number from 0 to 1000 | `5` |
+| `preview_context_lines` | A whole number from 0 to 1000 | `2` |
 
 A command-line option overrides the matching setting. An unknown setting or an invalid value stops commit-trail with an error that names the file.
 
