@@ -7,9 +7,8 @@ commit-trail is a terminal application that follows each file's changes across a
 
 The file is the main unit of navigation. You select a file, step through the commits that changed it, and read each diff with its PR. commit-trail complements [tuicr](https://github.com/agavra/tuicr): commit-trail shows the history, and tuicr writes and submits review comments.
 
+The demo below runs `commit-trail 778 780` in a clone of [agavra/tuicr](https://github.com/agavra/tuicr).
 ![commit-trail on two open tuicr PRs that change the same diff view files](docs/demo.gif)
-
-The demo runs `commit-trail 778 780` in a clone of [agavra/tuicr](https://github.com/agavra/tuicr). To record it again, run `scripts/record-demo.sh`.
 
 ## Requirements
 
