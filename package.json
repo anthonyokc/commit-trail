@@ -15,7 +15,8 @@
     "build": "bun build --compile --minify ./src/main.ts --outfile dist/commit-trail"
   },
   "dependencies": {
-    "@opentui/core": "0.6.5"
+    "@opentui/core": "0.6.5",
+    "@pierre/diffs": "1.5.2"
   },
   "devDependencies": {
     "@types/bun": "latest",
