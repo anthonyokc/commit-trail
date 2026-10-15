@@ -10,7 +10,8 @@ import { formatNumbers } from "../selection.ts";
 import type { FileChange, FileHistory } from "../types.ts";
 import { tuicrCommandForCommit, tuicrCommandForPullRequest } from "../tuicr.ts";
 import { deltaInstalled, renderWithDelta, type DeltaOptions, type DiffRenderer } from "../delta.ts";
-import { renderWithPierre, type PierreOptions } from "../pierre.ts";
+import { describeHunk, parseHunkHeader } from "../hunk.ts";
+import { renderWithPierre, type PierreOptions, type RenderedDiff } from "../pierre.ts";
 import { parseAnsi } from "./ansi.ts";
 import { diffLine, fit, span, theme, toStyled, type Line } from "./styled.ts";
 
@@ -21,12 +22,16 @@ export interface AppOptions {
   /** Directory for reports that the `r` and `R` keys write. */
   reportDir: string;
   maxDiffLines: number;
-  /** Renderer for the full diff view. `t` switches it while the interface runs. */
+  /** Renderer for the preview and the full diff view. `t` switches it while the interface runs. */
   diffRenderer?: DiffRenderer;
+  /** Unchanged lines around each change in the full diff view. Defaults to 5. */
+  contextLines?: number;
+  /** Unchanged lines around each change in the selected change panel. Defaults to 2. */
+  previewContextLines?: number;
   /** Shiki theme for the pierre renderer. Defaults to "pierre-dark". */
   pierreTheme?: string;
   /** Renders a unified diff with @pierre/diffs. Defaults to `renderWithPierre`. */
-  renderPierre?: (patch: string, options: PierreOptions) => Promise<Line[]>;
+  renderPierre?: (patch: string, options: PierreOptions) => Promise<RenderedDiff>;
   /** Renders a unified diff with delta at a width. Defaults to running the `delta` command. */
   renderDelta?: (patch: string, width: number, options: DeltaOptions) => Promise<string>;
   /** Runs an interactive command with the terminal and extra environment variables. Returns its exit status. */
@@ -73,7 +78,13 @@ export class TrailApp {
   /** In focus mode, list only files that the focus PR changes. */
   private focusOnly: boolean;
   private readonly patches = new Map<string, Promise<string>>();
-  private readonly rendered = new Map<string, Promise<Line[]>>();
+  private readonly rendered = new Map<string, Promise<RenderedDiff>>();
+  /** Extra context lines per entry, added by `e`. `WHOLE_FILE` shows the complete file. */
+  private readonly expansion = new Map<string, number>();
+  /** The full diff view's last frame, used to map a mouse click to a separator row. */
+  private visibleDiff: { scroll: number; gapRows: number[] } | null = null;
+  /** Clickable commit labels in the selected change panel: panel row, column range, and timeline index. */
+  private detailTargets: { row: number; start: number; end: number; index: number }[] = [];
   private diffRenderer: DiffRenderer;
   private renderToken = 0;
 
@@ -82,7 +93,7 @@ export class TrailApp {
     private readonly options: AppOptions,
   ) {
     this.focusOnly = options.model.focus !== null;
-    this.diffRenderer = options.diffRenderer ?? "builtin";
+    this.diffRenderer = options.diffRenderer ?? "pierre";
     this.files = this.filteredFiles();
     const root = new BoxRenderable(renderer, { id: "root", flexDirection: "column", width: "100%", height: "100%" });
     this.header = new TextRenderable(renderer, { id: "header", height: HEADER_HEIGHT, wrapMode: "none" });
@@ -105,6 +116,10 @@ export class TrailApp {
     root.add(this.detailBox);
     root.add(this.footer);
     renderer.root.add(root);
+
+    this.detailBox.onMouseDown = (event) => this.handleDetailClick(event.x, event.y);
+    this.detailBox.onMouseScroll = (event) => this.handleDetailScroll(event.scroll?.direction);
+    this.filesBox.onMouseDown = (event) => this.handleFilesClick(event.y);
 
     renderer.on("resize", () => this.render());
     this.render();
@@ -218,12 +233,78 @@ export class TrailApp {
     } else if (char === "o") void this.openTuicr(false);
     else if (char === "O") void this.openTuicr(true);
     else if (char === "D") void this.openPager();
+    else if (char === "e") this.expand(false);
+    else if (char === "E") this.expand(true);
     else if (char === "t") {
-      const order: DiffRenderer[] = this.deltaAvailable() ? ["delta", "pierre", "builtin"] : ["pierre", "builtin"];
+      const order: DiffRenderer[] = this.deltaAvailable() ? ["pierre", "delta", "builtin"] : ["pierre", "builtin"];
       this.diffRenderer = order[(order.indexOf(this.diffRenderer) + 1) % order.length]!;
       this.diffScroll = 0;
       this.status = `Diffs use ${RENDERER_NAMES[this.diffRenderer]}.${this.deltaAvailable() ? "" : " Install delta (brew install git-delta) to add it to this list."}`;
     } else return;
+    this.render();
+  }
+
+  /** Adds `EXPAND_STEP` context lines to the selected entry, or with `whole`, switches it to the whole file and back. */
+  private expand(whole: boolean): void {
+    const current = this.currentEntry();
+    if (!current) return;
+    const key = entryKey(current.entry);
+    const extra = this.expansion.get(key) ?? 0;
+    if (whole) {
+      this.expansion.set(key, extra === WHOLE_FILE ? 0 : WHOLE_FILE);
+      this.status = extra === WHOLE_FILE ? "Showing the changes with their context lines." : "Showing the whole file.";
+    } else if (extra === WHOLE_FILE) {
+      this.status = "The whole file is already shown. Press E to collapse it.";
+    } else {
+      this.expansion.set(key, extra + EXPAND_STEP);
+      this.status = `Showing ${this.contextFor(current.entry)} unchanged lines around each change.`;
+    }
+    this.render();
+  }
+
+  private contextFor(entry: Entry): number {
+    const extra = this.expansion.get(entryKey(entry)) ?? 0;
+    return extra === WHOLE_FILE ? WHOLE_FILE : (this.options.contextLines ?? 5) + extra;
+  }
+
+  /**
+   * In the change panel, a click on a commit label selects that change, and a click elsewhere opens the diff view.
+   * In the diff view, a click on a separator row expands the diff.
+   */
+  private handleDetailClick(screenX: number, screenY: number): void {
+    if (this.view === "history") {
+      const current = this.currentEntry();
+      if (!current) return;
+      const row = screenY - this.detailText.screenY;
+      const column = screenX - this.detailText.screenX;
+      const target = this.detailTargets.find((t) => t.row === row && column >= t.start && column < t.end);
+      if (target) {
+        this.entryIndex.set(current.file.path, target.index);
+        return this.render();
+      }
+      this.view = "diff";
+      this.diffScroll = 0;
+      return this.render();
+    }
+    if (this.view !== "diff" || !this.visibleDiff) return;
+    // The first text row of the diff view is the commit header line.
+    const index = screenY - this.detailText.screenY - 1 + this.visibleDiff.scroll;
+    if (this.visibleDiff.gapRows.includes(index)) this.expand(false);
+  }
+
+  private handleDetailScroll(direction: string | undefined): void {
+    if (this.view !== "diff") return;
+    if (direction === "down") this.diffScroll += 3;
+    else if (direction === "up") this.diffScroll = Math.max(0, this.diffScroll - 3);
+    else return;
+    this.render();
+  }
+
+  private handleFilesClick(screenY: number): void {
+    if (this.view !== "history") return;
+    const row = this.fileRows()[screenY - this.filesText.screenY + this.fileScroll];
+    if (row?.kind !== "file") return;
+    this.fileIndex = row.index;
     this.render();
   }
 
@@ -352,25 +433,34 @@ export class TrailApp {
   }
 
   /**
-   * Returns the styled diff lines for the full diff view (`full`) or the selected change panel (`preview`).
-   * A preview uses one line of context and omits the file header that the panel already shows.
+   * Returns the styled diff for the full diff view (`full`) or the selected change panel (`preview`).
+   * Git supplies `contextLines` (or `previewContextLines`) unchanged lines around each change, plus any expansion.
+   * The preview omits the file header that the panel already shows.
    * If delta or pierre fails, the view falls back to the built-in renderer and the footer shows the error.
    */
-  private async styledDiff(entry: Entry, width: number, mode: "full" | "preview"): Promise<Line[]> {
+  private async styledDiff(entry: Entry, width: number, mode: "full" | "preview"): Promise<RenderedDiff> {
     const preview = mode === "preview";
+    const context = preview ? (this.options.previewContextLines ?? 2) : this.contextFor(entry);
     const renderer = this.diffRenderer;
     if (renderer !== "builtin") {
-      const key = `${renderer}:${entry.firstOid}..${entry.lastOid}:${width}:${mode}`;
+      const key = `${renderer}:${entryKey(entry)}:${width}:${mode}:U${context}`;
       let cached = this.rendered.get(key);
       if (!cached) {
-        cached = this.patchText(entry, preview ? 1 : 3).then((patch) => {
-          if (patch.trim() === "") return [];
+        cached = this.patchText(entry, context).then(async (patch): Promise<RenderedDiff> => {
+          if (patch.trim() === "") return { lines: [], gapRows: [] };
           if (renderer === "pierre") {
             const render = this.options.renderPierre ?? renderWithPierre;
-            return render(patch, { width, theme: this.options.pierreTheme, omitFileHeader: preview });
+            return render(patch, {
+              width,
+              theme: this.options.pierreTheme,
+              omitFileHeader: preview,
+              showGaps: !preview,
+              expandHint: "e or click: show more · E: whole file",
+            });
           }
           const render = this.options.renderDelta ?? ((p: string, w: number, o: DeltaOptions) => renderWithDelta(p, w, this.options.git.root, o));
-          return render(patch, width, { omitFileHeader: preview }).then((text) => trimBlankStart(parseAnsi(text)));
+          const text = await render(patch, width, { omitFileHeader: preview });
+          return { lines: trimBlankStart(parseAnsi(text)), gapRows: [] };
         });
         this.rendered.set(key, cached);
       }
@@ -383,8 +473,8 @@ export class TrailApp {
         this.footer.content = toStyled([fit(this.footerLine(), this.width)]);
       }
     }
-    const body = patchBody(await this.patchText(entry));
-    return (preview ? compactDiff(body, 1) : body).map(diffLine);
+    const body = patchBody(await this.patchText(entry, context));
+    return { lines: body.map(builtinDiffLine), gapRows: [] };
   }
 
   // ----- Rendering -----
@@ -422,16 +512,16 @@ export class TrailApp {
     if (this.view === "diff") {
       this.detailBox.title = ` DIFF ${current.entry.label} ${current.file.path} `;
       this.detailText.content = toStyled([[span("Loading diff…", { fg: theme.muted })]]);
-      void this.styledDiff(current.entry, layout.detailInner.width, "full").then((lines) => {
+      void this.styledDiff(current.entry, layout.detailInner.width, "full").then((diff) => {
         if (token !== this.renderToken) return;
-        this.detailText.content = toStyled(this.diffLines(current.entry, lines, layout.detailInner.width, layout.detailInner.height));
+        this.detailText.content = toStyled(this.diffLines(current.entry, diff, layout.detailInner.width, layout.detailInner.height));
       });
     } else {
       this.detailBox.title = " SELECTED CHANGE ";
       this.detailText.content = toStyled(this.detailLines(current, null, [], layout.detailInner.width, layout.detailInner.height));
       void Promise.all([this.analyses(current.entry), this.styledDiff(current.entry, layout.detailInner.width, "preview")]).then(([analyses, preview]) => {
         if (token !== this.renderToken) return;
-        this.detailText.content = toStyled(this.detailLines(current, analyses, preview, layout.detailInner.width, layout.detailInner.height));
+        this.detailText.content = toStyled(this.detailLines(current, analyses, preview.lines, layout.detailInner.width, layout.detailInner.height));
       });
     }
   }
@@ -461,7 +551,7 @@ export class TrailApp {
   private footerLine(): Line {
     if (this.searching) return [span(" Search: ", { fg: theme.accent }), span(this.query + "▏"), span("   Enter keep  Esc clear", { fg: theme.muted })];
     if (this.status) return [span(` ${this.status}`, { fg: theme.warning })];
-    if (this.view === "diff") return [span(" j/k Scroll  d/u Page  h/l Change  t Renderer  D Pager  o tuicr PR  O tuicr commit  Esc Back  q Quit", { fg: theme.muted })];
+    if (this.view === "diff") return [span(" j/k Scroll  d/u Page  h/l Change  e/E Expand  t Renderer  D Pager  o tuicr PR  O tuicr commit  Esc Back  q Quit", { fg: theme.muted })];
     const hints = " j/k Files  h/l Timeline  Enter Diff  p PR/commit  o tuicr  / Search  r Report  y Copy  ? Help  q Quit";
     return [span(hints + (this.query ? `   [filter: ${this.query}]` : ""), { fg: theme.muted })];
   }
@@ -640,10 +730,28 @@ export class TrailApp {
 
     const groups = { earlier: [] as Entry[], later: [] as Entry[], parallel: [] as Entry[] };
     for (const other of entries) if (other !== entry) groups[this.relation(entry, other)].push(other);
-    const describe = (list: Entry[]) => (list.length === 0 ? "None" : list.map((e) => `${e.label} ${e.lastOid.slice(0, 7)}`).join(", "));
-    lines.push([span("Earlier changes: ", { fg: theme.muted }), span(describe(groups.earlier))]);
-    lines.push([span("Later changes:   ", { fg: theme.muted }), span(describe(groups.later), { fg: groups.later.length > 0 ? theme.warning : theme.text })]);
-    if (groups.parallel.length > 0) lines.push([span("Parallel:        ", { fg: theme.muted }), span(`${describe(groups.parallel)} (no defined order)`)]);
+    // Each listed change is a click target that selects it on the timeline.
+    const targets: { row: number; start: number; end: number; index: number }[] = [];
+    const relationLine = (title: string, list: Entry[], color: string, suffix = ""): Line => {
+      const line: Line = [span(title, { fg: theme.muted })];
+      if (list.length === 0) return [...line, span("None")];
+      let column = title.length;
+      list.forEach((other, position) => {
+        if (position > 0) {
+          line.push(span(", "));
+          column += 2;
+        }
+        const text = `${other.label} ${other.lastOid.slice(0, 7)}`;
+        targets.push({ row: lines.length, start: column, end: column + text.length, index: entries.indexOf(other) });
+        line.push(span(text, { fg: color, underline: true }));
+        column += text.length;
+      });
+      return suffix ? [...line, span(suffix, { fg: theme.muted })] : line;
+    };
+    lines.push(relationLine("Earlier changes: ", groups.earlier, theme.accent));
+    lines.push(relationLine("Later changes:   ", groups.later, theme.warning));
+    if (groups.parallel.length > 0) lines.push(relationLine("Parallel:        ", groups.parallel, theme.accent, " (no defined order)"));
+    this.detailTargets = targets;
 
     const attribution = model.attributions.get(last.oid);
     if (attribution && attribution.equivalents.length > 0) {
@@ -661,16 +769,19 @@ export class TrailApp {
     return lines.slice(0, height).map((line) => fit(line, width));
   }
 
-  private diffLines(entry: Entry, diff: Line[], width: number, height: number): Line[] {
+  private diffLines(entry: Entry, rendered: RenderedDiff, width: number, height: number): Line[] {
+    const diff = rendered.lines;
+    const context = this.contextFor(entry);
     const header: Line = [
       span(`${entry.label} `, { fg: theme.pr, bold: true }),
       span(entry.changes.length === 1 ? entry.lastOid.slice(0, 7) : `${entry.firstOid.slice(0, 7)}..${entry.lastOid.slice(0, 7)}`, { fg: theme.accent }),
       span(`  ${this.options.model.commits.get(entry.lastOid)?.subject ?? ""}`, { fg: theme.muted }),
-      span(`  [${RENDERER_NAMES[this.diffRenderer]}]`, { fg: theme.muted }),
+      span(`  [${RENDERER_NAMES[this.diffRenderer]} · ${context === WHOLE_FILE ? "whole file" : `${context} context line${context === 1 ? "" : "s"}`}]`, { fg: theme.muted }),
     ];
     const room = Math.max(1, height - 2);
     const maxScroll = Math.max(0, diff.length - room);
     this.diffScroll = Math.min(this.diffScroll, maxScroll);
+    this.visibleDiff = { scroll: this.diffScroll, gapRows: rendered.gapRows };
     const body = diff.slice(this.diffScroll, this.diffScroll + room);
     const position: Line = [span(diff.length === 0 ? "No text diff." : `Lines ${this.diffScroll + 1}-${Math.min(diff.length, this.diffScroll + room)} of ${diff.length}`, { fg: theme.muted })];
     return [header, ...body, position].map((line) => fit(line, width));
@@ -682,7 +793,10 @@ export class TrailApp {
       ["j / k", "Select the next or previous file"],
       ["h / l", "Move backward or forward through the file's changes"],
       ["Enter", "Show the full diff of the selected change"],
-      ["t", "In the diff view, switch the diff renderer: delta (if installed), pierre, built-in"],
+      ["e", "In the diff view, show 10 more unchanged lines around each change (or click a ⋯ row)"],
+      ["E", "In the diff view, show the whole file, or return to the changes"],
+      ["t", "In the diff view, switch the diff renderer: pierre, delta (if installed), built-in"],
+      ["mouse", "Click a file or a listed commit to select it, click the change panel to open the diff, scroll the diff"],
       ["D", "Open the selected diff in a pager: delta in delta mode, Git's pager otherwise"],
       ["Esc", "Return to the file history, or clear the search"],
       ["p", "Switch between the commit timeline and the PR timeline"],
@@ -801,6 +915,25 @@ export function compactDiff(lines: string[], context: number): string[] {
 
 const RENDERER_NAMES: Record<DiffRenderer, string> = { delta: "delta", pierre: "pierre", builtin: "built-in" };
 
+/** Context lines that `e` adds. */
+const EXPAND_STEP = 10;
+/** Context line count that makes Git include every line of the file. */
+const WHOLE_FILE = 1_000_000;
+
+function entryKey(entry: Entry): string {
+  return `${entry.firstOid}..${entry.lastOid}`;
+}
+
+/** Colors one built-in diff line and replaces a `@@` header with a readable heading. */
+function builtinDiffLine(text: string): Line {
+  const header = parseHunkHeader(text);
+  if (!header) return diffLine(text);
+  return [
+    span(describeHunk(header.oldStart, header.oldCount, header.newStart, header.newCount), { fg: theme.hunk, bold: true }),
+    span(header.context ? ` · ${header.context}` : "", { fg: theme.muted }),
+  ];
+}
+
 /** Removes blank lines from the start of rendered output. */
 function trimBlankStart(lines: Line[]): Line[] {
   const first = lines.findIndex((line) => line.some((part) => part.text.trim() !== ""));
@@ -859,7 +992,7 @@ async function launchInTerminal(renderer: CliRenderer, command: string[], cwd: s
 
 /** Starts the interactive interface and resolves when the user quits. */
 export async function runTui(options: AppOptions): Promise<void> {
-  const renderer = await createCliRenderer({ exitOnCtrlC: false, useMouse: false });
+  const renderer = await createCliRenderer({ exitOnCtrlC: false, useMouse: true });
   const app = new TrailApp(renderer, options);
   renderer.keyInput.on("keypress", (key) => app.handleKey(key));
   await new Promise<void>((resolve) => renderer.once("destroy", () => resolve()));

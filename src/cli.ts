@@ -19,6 +19,8 @@ export interface CliOptions {
   reportDir?: string;
   /** Renderer from `--diff`, or `undefined` so the config file applies. */
   diff?: DiffRendererChoice;
+  /** Context lines from `--context`, or `undefined` so the config file applies. */
+  context?: number;
   /** Config file from `--config`, or `undefined` for the default path. */
   config?: string;
 }
@@ -51,13 +53,14 @@ Options:
       --copy                  report: copy Markdown to the clipboard
       --max-diff-lines <n>    Diff lines per patch in reports (default: 60)
       --report-dir <path>     Directory for reports written from the interface (default: system temp directory)
-      --diff <renderer>       Diff renderer: auto, delta, pierre, or builtin (default: the config file's diff, else auto)
+      --diff <renderer>       Diff renderer: pierre, delta, or builtin (default: the config file's diff, else pierre)
+      --context <n>           Unchanged lines around each change in the full diff view (default: the config file's context_lines, else 5)
       --config <path>         Config file (default: $XDG_CONFIG_HOME/commit-trail/config.toml)
   -h, --help                  Show this help
   -V, --version               Show the version
 
 Keys (interface):
-  j/k Files   h/l Timeline   Enter Diff   t renderer   D Pager   Esc Back   p PR/commit timeline   o tuicr (PR)   O tuicr (commit)
+  j/k Files   h/l Timeline   Enter Diff   e/E Expand   t Renderer   D Pager   Esc Back   p PR/commit timeline   o tuicr (PR)   O tuicr (commit)
   a Focus PR files/all files   / Search   r Report (selected PR)   R Report (all PRs)   y Copy report   ? Help and notes   q Quit
 `;
 
@@ -143,6 +146,13 @@ export function parseArgs(argv: string[]): CliOptions {
       case "--config":
         options.config = value(flag);
         break;
+      case "--context": {
+        const raw = value(flag);
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < 0 || n > 1000) throw new Error(`--context must be a whole number from 0 to 1000, not "${raw}".`);
+        options.context = n;
+        break;
+      }
       case "--diff": {
         const raw = value(flag);
         if (raw !== "auto" && raw !== "delta" && raw !== "pierre" && raw !== "builtin") throw new Error(`--diff must be auto, delta, pierre, or builtin, not "${raw}".`);

@@ -1,4 +1,5 @@
 import { getFiletypeFromFileName, getSharedHighlighter, parsePatchFiles, renderDiffWithHighlighter, type FileDiffMetadata } from "@pierre/diffs";
+import { describeGap, describeHunk } from "./hunk.ts";
 import { fit, span, type Line, type Span } from "./tui/styled.ts";
 
 export const DEFAULT_PIERRE_THEME = "pierre-dark";
@@ -12,6 +13,16 @@ export interface PierreOptions {
   layout?: "auto" | "unified" | "split";
   /** Omit the file name header, for panels that already name the file. */
   omitFileHeader?: boolean;
+  /** Text after the hidden-line count on separator rows, for example "e: show more". */
+  expandHint?: string;
+  /** Show a separator row for hidden unchanged lines before a hunk. Defaults to true. */
+  showGaps?: boolean;
+}
+
+/** Rendered diff lines plus the indexes of separator rows that stand for hidden unchanged lines. */
+export interface RenderedDiff {
+  lines: Line[];
+  gapRows: number[];
 }
 
 interface Palette {
@@ -43,11 +54,11 @@ const SPLIT_MIN_WIDTH = 120;
  * This function lays out the lines with line numbers, in unified or split columns.
  * An unknown file type renders as plain text. An unknown theme throws an error.
  */
-export async function renderWithPierre(patch: string, options: PierreOptions): Promise<Line[]> {
+export async function renderWithPierre(patch: string, options: PierreOptions): Promise<RenderedDiff> {
   const theme = options.theme ?? DEFAULT_PIERRE_THEME;
   const files = parsePatchFiles(patch, undefined, true).flatMap((parsed) => parsed.files);
   const split = options.layout === "split" || ((options.layout ?? "auto") === "auto" && options.width >= SPLIT_MIN_WIDTH);
-  const lines: Line[] = [];
+  const out: RenderedDiff = { lines: [], gapRows: [] };
 
   for (const file of files) {
     const lang = getFiletypeFromFileName(file.name);
@@ -64,10 +75,10 @@ export async function renderWithPierre(patch: string, options: PierreOptions): P
       deletion: (index: number) => toSpans(result.code.deletionLines[index] as HastNode | undefined, palette.fg),
       addition: (index: number) => toSpans(result.code.additionLines[index] as HastNode | undefined, palette.fg),
     };
-    if (!options.omitFileHeader) lines.push(...fileHeader(file, palette, options.width));
-    lines.push(...(split ? layoutSplit(file, tokens, palette, options.width) : layoutUnified(file, tokens, palette, options.width)));
+    if (!options.omitFileHeader) out.lines.push(...fileHeader(file, palette, options.width));
+    (split ? layoutSplit : layoutUnified)(file, tokens, palette, options, out);
   }
-  return lines;
+  return out;
 }
 
 type TokenSource = { deletion: (index: number) => Span[]; addition: (index: number) => Span[] };
@@ -78,9 +89,19 @@ function fileHeader(file: FileDiffMetadata, palette: Palette, width: number): Li
   return [fit([span(`${name}${kind}`, { fg: palette.header, bold: true })], width), fit([span("─".repeat(width), { fg: palette.muted })], width)];
 }
 
-function hunkHeader(hunk: FileDiffMetadata["hunks"][number], palette: Palette, width: number): Line {
-  const range = `@@ -${hunk.deletionStart},${hunk.deletionCount} +${hunk.additionStart},${hunk.additionCount} @@`;
-  return fit([span(range, { fg: palette.header }), span(hunk.hunkContext ? ` ${hunk.hunkContext}` : "", { fg: palette.muted })], width);
+/**
+ * Adds the rows before a hunk: a separator for hidden unchanged lines, when there are any,
+ * and a heading such as "Lines 12–14 · tar_option_set(".
+ */
+function pushHunkHeading(hunk: FileDiffMetadata["hunks"][number], palette: Palette, options: PierreOptions, out: RenderedDiff): void {
+  if (hunk.collapsedBefore > 0 && options.showGaps !== false) {
+    out.gapRows.push(out.lines.length);
+    out.lines.push(
+      fit([span(describeGap(hunk.collapsedBefore), { fg: palette.muted }), span(options.expandHint ? `   ${options.expandHint}` : "", { fg: palette.muted, dim: true })], options.width),
+    );
+  }
+  const where = describeHunk(hunk.deletionStart, hunk.deletionCount, hunk.additionStart, hunk.additionCount);
+  out.lines.push(fit([span(where, { fg: palette.header, bold: true }), span(hunk.hunkContext ? ` · ${hunk.hunkContext}` : "", { fg: palette.muted })], options.width));
 }
 
 function numberWidth(file: FileDiffMetadata): number {
@@ -88,17 +109,18 @@ function numberWidth(file: FileDiffMetadata): number {
   return String(last).length;
 }
 
-function layoutUnified(file: FileDiffMetadata, tokens: TokenSource, palette: Palette, width: number): Line[] {
+function layoutUnified(file: FileDiffMetadata, tokens: TokenSource, palette: Palette, options: PierreOptions, out: RenderedDiff): void {
+  const width = options.width;
   const digits = numberWidth(file);
   const blank = " ".repeat(digits);
-  const lines: Line[] = [];
+  const lines = out.lines;
   const row = (oldNo: string, newNo: string, sign: string, content: Span[], bg?: string, signColor?: string): Line => {
     const gutter = [span(`${oldNo} ${newNo} `, { fg: palette.muted, bg }), span(sign, { fg: signColor ?? palette.muted, bg })];
     return fit([...gutter, ...content.map((part) => ({ ...part, bg: part.bg ?? bg }))], width, bg ? { bg } : undefined);
   };
 
   for (const hunk of file.hunks) {
-    lines.push(hunkHeader(hunk, palette, width));
+    pushHunkHeading(hunk, palette, options, out);
     let oldLine = hunk.deletionStart;
     let newLine = hunk.additionStart;
     for (const block of hunk.hunkContent) {
@@ -118,43 +140,43 @@ function layoutUnified(file: FileDiffMetadata, tokens: TokenSource, palette: Pal
       }
     }
   }
-  return lines;
 }
 
-function layoutSplit(file: FileDiffMetadata, tokens: TokenSource, palette: Palette, width: number): Line[] {
+function layoutSplit(file: FileDiffMetadata, tokens: TokenSource, palette: Palette, options: PierreOptions, out: RenderedDiff): void {
+  const width = options.width;
   const digits = numberWidth(file);
   const half = Math.floor((width - 1) / 2);
-  const lines: Line[] = [];
-  const cell = (number: number, content: Span[], bg?: string): Line => {
-    const gutter = span(`${String(number).padStart(digits)} `, { fg: palette.muted, bg });
-    return fit([gutter, ...content.map((part) => ({ ...part, bg: part.bg ?? bg }))], half, bg ? { bg } : {});
+  const lines = out.lines;
+  const cell = (number: number, content: Span[], sign: " " | "-" | "+", bg?: string): Line => {
+    const signColor = sign === "-" ? palette.removedSign : sign === "+" ? palette.addedSign : palette.muted;
+    const gutter = [span(`${String(number).padStart(digits)} `, { fg: palette.muted, bg }), span(`${sign} `, { fg: signColor, bg })];
+    return fit([...gutter, ...content.map((part) => ({ ...part, bg: part.bg ?? bg }))], half, bg ? { bg } : {});
   };
   const divider = span("│", { fg: palette.muted });
 
   for (const hunk of file.hunks) {
-    lines.push(hunkHeader(hunk, palette, width));
+    pushHunkHeading(hunk, palette, options, out);
     let oldLine = hunk.deletionStart;
     let newLine = hunk.additionStart;
     for (const block of hunk.hunkContent) {
       if (block.type === "context") {
         for (let i = 0; i < block.lines; i++) {
           lines.push([
-            ...cell(oldLine++, emphasize(tokens.deletion(block.deletionLineIndex + i), undefined)),
+            ...cell(oldLine++, emphasize(tokens.deletion(block.deletionLineIndex + i), undefined), " "),
             divider,
-            ...cell(newLine++, emphasize(tokens.addition(block.additionLineIndex + i), undefined)),
+            ...cell(newLine++, emphasize(tokens.addition(block.additionLineIndex + i), undefined), " "),
           ]);
         }
       } else {
         const rows = Math.max(block.deletions, block.additions);
         for (let i = 0; i < rows; i++) {
-          const left = i < block.deletions ? cell(oldLine++, emphasize(tokens.deletion(block.deletionLineIndex + i), palette.removedEmphasisBg), palette.removedBg) : fit([], half, {});
-          const right = i < block.additions ? cell(newLine++, emphasize(tokens.addition(block.additionLineIndex + i), palette.addedEmphasisBg), palette.addedBg) : fit([], half, {});
+          const left = i < block.deletions ? cell(oldLine++, emphasize(tokens.deletion(block.deletionLineIndex + i), palette.removedEmphasisBg), "-", palette.removedBg) : fit([], half, {});
+          const right = i < block.additions ? cell(newLine++, emphasize(tokens.addition(block.additionLineIndex + i), palette.addedEmphasisBg), "+", palette.addedBg) : fit([], half, {});
           lines.push([...left, divider, ...right]);
         }
       }
     }
   }
-  return lines;
 }
 
 /** Converts one highlighted line to spans. Text inside `data-diff-span` marks a changed word. */

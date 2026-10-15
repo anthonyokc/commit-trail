@@ -79,6 +79,8 @@ async function main(argv: string[]): Promise<number> {
       maxDiffLines: options.maxDiffLines,
       diffRenderer,
       pierreTheme: config.pierreTheme,
+      contextLines: options.context ?? config.contextLines,
+      previewContextLines: config.previewContextLines,
     });
     return 0;
   }
