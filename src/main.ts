@@ -78,6 +78,7 @@ async function main(argv: string[]): Promise<number> {
       reportDir: options.reportDir ?? join(tmpdir(), "commit-trail"),
       maxDiffLines: options.maxDiffLines,
       diffRenderer,
+      pierreTheme: config.pierreTheme,
     });
     return 0;
   }

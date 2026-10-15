@@ -20,7 +20,7 @@ test("reads the diff renderer", async () => {
 test("rejects an invalid value and an unknown key, naming the file", async () => {
   const invalid = join(dir, "invalid.toml");
   await Bun.write(invalid, 'diff = "less"\n');
-  await expect(loadConfig(invalid)).rejects.toThrow(`${invalid}: diff must be "auto", "delta", or "builtin", not "less".`);
+  await expect(loadConfig(invalid)).rejects.toThrow(`${invalid}: diff must be "auto", "delta", "pierre", or "builtin", not "less".`);
   const unknown = join(dir, "unknown.toml");
   await Bun.write(unknown, 'pager = "delta"\n');
   await expect(loadConfig(unknown)).rejects.toThrow(`${unknown}: unknown setting "pager".`);

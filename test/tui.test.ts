@@ -91,6 +91,7 @@ test("delta renders the preview and the full diff, t switches renderers, and D o
       expect(patch).toContain("diff --git a/R/clean.R b/R/clean.R");
       return options.omitFileHeader ? "\x1b[34mDELTA PREVIEW LINE\x1b[0m\n" : "\x1b[48;2;0;40;0mDELTA FULL LINE\x1b[0m\n";
     },
+    renderPierre: async () => [[{ text: "PIERRE RENDERED LINE" }]],
   });
   await setup.mockInput.pressKey("l");
   let frame = await frameWith("DELTA PREVIEW LINE");
@@ -107,6 +108,11 @@ test("delta renders the preview and the full diff, t switches renderers, and D o
   await setup.waitFor(() => launched.length === 1);
   expect(launched[0]).toEqual(["git", "-c", "core.pager=delta --paging=always", "show", secondCommit, "--", "R/clean.R"]);
   expect(launchEnv[0]?.LESS).toEndWith("-+F");
+
+  // t cycles delta, pierre, built-in.
+  await setup.mockInput.pressKey("t");
+  frame = await frameWith("PIERRE RENDERED LINE");
+  expect(frame).toContain("[pierre]");
 
   await setup.mockInput.pressKey("t");
   frame = await frameWith("[built-in]");

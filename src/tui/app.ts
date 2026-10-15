@@ -10,6 +10,7 @@ import { formatNumbers } from "../selection.ts";
 import type { FileChange, FileHistory } from "../types.ts";
 import { tuicrCommandForCommit, tuicrCommandForPullRequest } from "../tuicr.ts";
 import { deltaInstalled, renderWithDelta, type DeltaOptions, type DiffRenderer } from "../delta.ts";
+import { renderWithPierre, type PierreOptions } from "../pierre.ts";
 import { parseAnsi } from "./ansi.ts";
 import { diffLine, fit, span, theme, toStyled, type Line } from "./styled.ts";
 
@@ -22,6 +23,10 @@ export interface AppOptions {
   maxDiffLines: number;
   /** Renderer for the full diff view. `t` switches it while the interface runs. */
   diffRenderer?: DiffRenderer;
+  /** Shiki theme for the pierre renderer. Defaults to "pierre-dark". */
+  pierreTheme?: string;
+  /** Renders a unified diff with @pierre/diffs. Defaults to `renderWithPierre`. */
+  renderPierre?: (patch: string, options: PierreOptions) => Promise<Line[]>;
   /** Renders a unified diff with delta at a width. Defaults to running the `delta` command. */
   renderDelta?: (patch: string, width: number, options: DeltaOptions) => Promise<string>;
   /** Runs an interactive command with the terminal and extra environment variables. Returns its exit status. */
@@ -68,7 +73,7 @@ export class TrailApp {
   /** In focus mode, list only files that the focus PR changes. */
   private focusOnly: boolean;
   private readonly patches = new Map<string, Promise<string>>();
-  private readonly deltaOutput = new Map<string, Promise<Line[]>>();
+  private readonly rendered = new Map<string, Promise<Line[]>>();
   private diffRenderer: DiffRenderer;
   private renderToken = 0;
 
@@ -214,13 +219,10 @@ export class TrailApp {
     else if (char === "O") void this.openTuicr(true);
     else if (char === "D") void this.openPager();
     else if (char === "t") {
-      if (this.diffRenderer === "builtin" && !this.deltaAvailable()) {
-        this.status = "delta is not installed. Install it with: brew install git-delta";
-      } else {
-        this.diffRenderer = this.diffRenderer === "delta" ? "builtin" : "delta";
-        this.diffScroll = 0;
-        this.status = this.diffRenderer === "delta" ? "Diffs use delta." : "Diffs use the built-in renderer.";
-      }
+      const order: DiffRenderer[] = this.deltaAvailable() ? ["delta", "pierre", "builtin"] : ["pierre", "builtin"];
+      this.diffRenderer = order[(order.indexOf(this.diffRenderer) + 1) % order.length]!;
+      this.diffScroll = 0;
+      this.status = `Diffs use ${RENDERER_NAMES[this.diffRenderer]}.${this.deltaAvailable() ? "" : " Install delta (brew install git-delta) to add it to this list."}`;
     } else return;
     this.render();
   }
@@ -351,27 +353,33 @@ export class TrailApp {
 
   /**
    * Returns the styled diff lines for the full diff view (`full`) or the selected change panel (`preview`).
-   * A preview uses one line of context and, with delta, omits the file header that the panel already shows.
-   * If delta fails, the view falls back to the built-in renderer and the footer shows delta's error.
+   * A preview uses one line of context and omits the file header that the panel already shows.
+   * If delta or pierre fails, the view falls back to the built-in renderer and the footer shows the error.
    */
   private async styledDiff(entry: Entry, width: number, mode: "full" | "preview"): Promise<Line[]> {
     const preview = mode === "preview";
-    if (this.diffRenderer === "delta") {
-      const key = `${entry.firstOid}..${entry.lastOid}:${width}:${mode}`;
-      let cached = this.deltaOutput.get(key);
+    const renderer = this.diffRenderer;
+    if (renderer !== "builtin") {
+      const key = `${renderer}:${entry.firstOid}..${entry.lastOid}:${width}:${mode}`;
+      let cached = this.rendered.get(key);
       if (!cached) {
-        const render = this.options.renderDelta ?? ((patch: string, w: number, o: DeltaOptions) => renderWithDelta(patch, w, this.options.git.root, o));
-        cached = this.patchText(entry, preview ? 1 : 3).then((patch) =>
-          patch.trim() === "" ? [] : render(patch, width, { omitFileHeader: preview }).then((text) => trimBlankStart(parseAnsi(text))),
-        );
-        this.deltaOutput.set(key, cached);
+        cached = this.patchText(entry, preview ? 1 : 3).then((patch) => {
+          if (patch.trim() === "") return [];
+          if (renderer === "pierre") {
+            const render = this.options.renderPierre ?? renderWithPierre;
+            return render(patch, { width, theme: this.options.pierreTheme, omitFileHeader: preview });
+          }
+          const render = this.options.renderDelta ?? ((p: string, w: number, o: DeltaOptions) => renderWithDelta(p, w, this.options.git.root, o));
+          return render(patch, width, { omitFileHeader: preview }).then((text) => trimBlankStart(parseAnsi(text)));
+        });
+        this.rendered.set(key, cached);
       }
       try {
         return await cached;
       } catch (error) {
-        this.deltaOutput.delete(key);
+        this.rendered.delete(key);
         this.diffRenderer = "builtin";
-        this.status = `delta failed, so the built-in diff is shown: ${error instanceof Error ? error.message : String(error)}`;
+        this.status = `${renderer} failed, so the built-in diff is shown: ${error instanceof Error ? error.message : String(error)}`;
         this.footer.content = toStyled([fit(this.footerLine(), this.width)]);
       }
     }
@@ -453,7 +461,7 @@ export class TrailApp {
   private footerLine(): Line {
     if (this.searching) return [span(" Search: ", { fg: theme.accent }), span(this.query + "▏"), span("   Enter keep  Esc clear", { fg: theme.muted })];
     if (this.status) return [span(` ${this.status}`, { fg: theme.warning })];
-    if (this.view === "diff") return [span(" j/k Scroll  d/u Page  h/l Change  t delta/built-in  D Pager  o tuicr PR  O tuicr commit  Esc Back  q Quit", { fg: theme.muted })];
+    if (this.view === "diff") return [span(" j/k Scroll  d/u Page  h/l Change  t Renderer  D Pager  o tuicr PR  O tuicr commit  Esc Back  q Quit", { fg: theme.muted })];
     const hints = " j/k Files  h/l Timeline  Enter Diff  p PR/commit  o tuicr  / Search  r Report  y Copy  ? Help  q Quit";
     return [span(hints + (this.query ? `   [filter: ${this.query}]` : ""), { fg: theme.muted })];
   }
@@ -658,7 +666,7 @@ export class TrailApp {
       span(`${entry.label} `, { fg: theme.pr, bold: true }),
       span(entry.changes.length === 1 ? entry.lastOid.slice(0, 7) : `${entry.firstOid.slice(0, 7)}..${entry.lastOid.slice(0, 7)}`, { fg: theme.accent }),
       span(`  ${this.options.model.commits.get(entry.lastOid)?.subject ?? ""}`, { fg: theme.muted }),
-      span(`  [${this.diffRenderer === "delta" ? "delta" : "built-in"}]`, { fg: theme.muted }),
+      span(`  [${RENDERER_NAMES[this.diffRenderer]}]`, { fg: theme.muted }),
     ];
     const room = Math.max(1, height - 2);
     const maxScroll = Math.max(0, diff.length - room);
@@ -674,7 +682,7 @@ export class TrailApp {
       ["j / k", "Select the next or previous file"],
       ["h / l", "Move backward or forward through the file's changes"],
       ["Enter", "Show the full diff of the selected change"],
-      ["t", "In the diff view, switch between delta and the built-in diff renderer"],
+      ["t", "In the diff view, switch the diff renderer: delta (if installed), pierre, built-in"],
       ["D", "Open the selected diff in a pager: delta in delta mode, Git's pager otherwise"],
       ["Esc", "Return to the file history, or clear the search"],
       ["p", "Switch between the commit timeline and the PR timeline"],
@@ -790,6 +798,8 @@ export function compactDiff(lines: string[], context: number): string[] {
     return false;
   });
 }
+
+const RENDERER_NAMES: Record<DiffRenderer, string> = { delta: "delta", pierre: "pierre", builtin: "built-in" };
 
 /** Removes blank lines from the start of rendered output. */
 function trimBlankStart(lines: Line[]): Line[] {

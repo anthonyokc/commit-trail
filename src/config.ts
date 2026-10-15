@@ -4,11 +4,13 @@ import type { DiffRendererChoice } from "./delta.ts";
 
 /** Settings from the config file. Command-line options override them. */
 export interface FileConfig {
-  /** Renderer for the full diff view and the `D` key. */
+  /** Renderer for diffs and the `D` key. */
   diff?: DiffRendererChoice;
+  /** Shiki theme for the pierre renderer. */
+  pierreTheme?: string;
 }
 
-const DIFF_CHOICES: DiffRendererChoice[] = ["auto", "delta", "builtin"];
+const DIFF_CHOICES: DiffRendererChoice[] = ["auto", "delta", "pierre", "builtin"];
 
 export function defaultConfigPath(): string {
   const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
@@ -34,11 +36,14 @@ export async function loadConfig(path: string): Promise<FileConfig> {
   for (const [key, value] of Object.entries(raw)) {
     if (key === "diff") {
       if (typeof value !== "string" || !DIFF_CHOICES.includes(value as DiffRendererChoice)) {
-        throw new Error(`${path}: diff must be "auto", "delta", or "builtin", not ${JSON.stringify(value)}.`);
+        throw new Error(`${path}: diff must be "auto", "delta", "pierre", or "builtin", not ${JSON.stringify(value)}.`);
       }
       config.diff = value as DiffRendererChoice;
+    } else if (key === "pierre_theme") {
+      if (typeof value !== "string" || value.trim() === "") throw new Error(`${path}: pierre_theme must be a Shiki theme name, such as "pierre-dark".`);
+      config.pierreTheme = value;
     } else {
-      throw new Error(`${path}: unknown setting "${key}". The supported setting is: diff.`);
+      throw new Error(`${path}: unknown setting "${key}". The supported settings are: diff, pierre_theme.`);
     }
   }
   return config;

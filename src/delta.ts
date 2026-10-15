@@ -1,22 +1,22 @@
 import { run } from "./process.ts";
 
-export type DiffRendererChoice = "auto" | "delta" | "builtin";
-export type DiffRenderer = "delta" | "builtin";
+export type DiffRendererChoice = "auto" | "delta" | "pierre" | "builtin";
+export type DiffRenderer = "delta" | "pierre" | "builtin";
 
 export function deltaInstalled(): boolean {
   return Bun.which("delta") !== null;
 }
 
 /**
- * Selects the renderer for the full diff view.
- * `auto` selects delta when it is on `PATH`, and the built-in renderer otherwise.
+ * Selects the diff renderer.
+ * `auto` selects delta when it is on `PATH`, and the bundled @pierre/diffs renderer otherwise.
  * `delta` throws an error when delta is not on `PATH`.
  */
 export function resolveDiffRenderer(choice: DiffRendererChoice): DiffRenderer {
-  if (choice === "builtin") return "builtin";
+  if (choice === "builtin" || choice === "pierre") return choice;
   if (deltaInstalled()) return "delta";
-  if (choice === "delta") throw new Error("The delta diff renderer (from --diff or the config file) requires delta on PATH. Install it with: brew install git-delta");
-  return "builtin";
+  if (choice === "auto") return "pierre";
+  throw new Error("The delta diff renderer (from --diff or the config file) requires delta on PATH. Install it with: brew install git-delta");
 }
 
 export interface DeltaOptions {

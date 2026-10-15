@@ -51,13 +51,13 @@ Options:
       --copy                  report: copy Markdown to the clipboard
       --max-diff-lines <n>    Diff lines per patch in reports (default: 60)
       --report-dir <path>     Directory for reports written from the interface (default: system temp directory)
-      --diff <renderer>       Full diff view: auto, delta, or builtin (default: the config file's diff, else auto)
+      --diff <renderer>       Diff renderer: auto, delta, pierre, or builtin (default: the config file's diff, else auto)
       --config <path>         Config file (default: $XDG_CONFIG_HOME/commit-trail/config.toml)
   -h, --help                  Show this help
   -V, --version               Show the version
 
 Keys (interface):
-  j/k Files   h/l Timeline   Enter Diff   t delta/built-in   D Pager   Esc Back   p PR/commit timeline   o tuicr (PR)   O tuicr (commit)
+  j/k Files   h/l Timeline   Enter Diff   t renderer   D Pager   Esc Back   p PR/commit timeline   o tuicr (PR)   O tuicr (commit)
   a Focus PR files/all files   / Search   r Report (selected PR)   R Report (all PRs)   y Copy report   ? Help and notes   q Quit
 `;
 
@@ -145,7 +145,7 @@ export function parseArgs(argv: string[]): CliOptions {
         break;
       case "--diff": {
         const raw = value(flag);
-        if (raw !== "auto" && raw !== "delta" && raw !== "builtin") throw new Error(`--diff must be auto, delta, or builtin, not "${raw}".`);
+        if (raw !== "auto" && raw !== "delta" && raw !== "pierre" && raw !== "builtin") throw new Error(`--diff must be auto, delta, pierre, or builtin, not "${raw}".`);
         options.diff = raw;
         break;
       }
