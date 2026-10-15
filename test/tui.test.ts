@@ -82,25 +82,26 @@ test("the interface shows the file timeline and moves between changes", async ()
   await setup.dispose();
 });
 
-test("the diff view shows delta output, switches to the built-in renderer, and opens Git's pager", async () => {
-  const widths: number[] = [];
+test("delta renders the preview and the full diff, t switches renderers, and D opens a pager", async () => {
+  const calls: { width: number; omitFileHeader: boolean }[] = [];
   const { setup, launched, launchEnv, frameWith } = await startApp({
     diffRenderer: "delta",
-    renderDelta: async (patch, width) => {
-      widths.push(width);
+    renderDelta: async (patch, width, options) => {
+      calls.push({ width, omitFileHeader: options.omitFileHeader ?? false });
       expect(patch).toContain("diff --git a/R/clean.R b/R/clean.R");
-      return "\x1b[48;2;0;40;0mDELTA RENDERED LINE\x1b[0m\n";
+      return options.omitFileHeader ? "\x1b[34mDELTA PREVIEW LINE\x1b[0m\n" : "\x1b[48;2;0;40;0mDELTA FULL LINE\x1b[0m\n";
     },
   });
-  await frameWith("Later changes:   #4");
   await setup.mockInput.pressKey("l");
-  await frameWith("Revises:");
+  let frame = await frameWith("DELTA PREVIEW LINE");
+  expect(frame).toContain("Revises:");
 
   await setup.mockInput.pressEnter();
-  let frame = await frameWith("DELTA RENDERED LINE");
+  frame = await frameWith("DELTA FULL LINE");
   expect(frame).toContain("[delta]");
-  // delta receives the panel's inner width: 110 columns minus borders and padding.
-  expect(widths).toEqual([106]);
+  // Both panels span the terminal: 110 columns minus borders and padding.
+  expect(calls.filter((call) => !call.omitFileHeader).map((call) => call.width)).toEqual([106]);
+  expect(calls.some((call) => call.omitFileHeader && call.width === 106)).toBe(true);
 
   await setup.mockInput.pressKey("D", { shift: true });
   await setup.waitFor(() => launched.length === 1);
@@ -109,8 +110,13 @@ test("the diff view shows delta output, switches to the built-in renderer, and o
 
   await setup.mockInput.pressKey("t");
   frame = await frameWith("[built-in]");
-  expect(frame).not.toContain("DELTA RENDERED LINE");
+  expect(frame).not.toContain("DELTA FULL LINE");
   expect(frame).toContain("+  dplyr::n_distinct(data$case_id)");
+
+  // The preview follows the renderer too.
+  await setup.mockInput.pressEscape();
+  frame = await frameWith("SELECTED CHANGE");
+  expect(frame).not.toContain("DELTA PREVIEW LINE");
 
   // In built-in mode, D uses Git's configured pager.
   await setup.mockInput.pressKey("D", { shift: true });
@@ -120,17 +126,17 @@ test("the diff view shows delta output, switches to the built-in renderer, and o
   await setup.dispose();
 });
 
-test("the diff view falls back to the built-in renderer when delta fails", async () => {
+test("the interface falls back to the built-in renderer when delta fails", async () => {
   const { setup, frameWith } = await startApp({
     diffRenderer: "delta",
     renderDelta: async () => {
       throw new Error("unknown option");
     },
   });
-  await frameWith("Later changes:   #4");
+  let frame = await frameWith("delta failed, so the built-in diff is shown: unknown option");
+  expect(frame).toContain("+  nrow(data)");
   await setup.mockInput.pressEnter();
-  const frame = await frameWith("[built-in]");
-  expect(frame).toContain("delta failed, so the built-in diff is shown: unknown option");
+  frame = await frameWith("[built-in]");
   expect(frame).toContain("+  nrow(data)");
   await setup.dispose();
 });

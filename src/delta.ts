@@ -19,16 +19,20 @@ export function resolveDiffRenderer(choice: DiffRendererChoice): DiffRenderer {
   return "builtin";
 }
 
+export interface DeltaOptions {
+  /** Omit the file name header and its decoration, for panels that already name the file. */
+  omitFileHeader?: boolean;
+}
+
 /**
  * Renders a unified diff with delta at a fixed width and returns delta's colored output.
  * delta reads its settings from the Git config of `cwd`, so side-by-side mode and themes apply.
  * Throws an error when delta exits with a nonzero status.
  */
-export async function renderWithDelta(patch: string, width: number, cwd: string): Promise<string> {
-  const result = await run(
-    ["delta", "--paging=never", `--width=${Math.max(40, width)}`, "--true-color=always", "--line-fill-method=spaces"],
-    { cwd, stdin: patch, env: { COLORTERM: "truecolor" } },
-  );
+export async function renderWithDelta(patch: string, width: number, cwd: string, options: DeltaOptions = {}): Promise<string> {
+  const args = ["delta", "--paging=never", `--width=${Math.max(40, width)}`, "--true-color=always", "--line-fill-method=spaces"];
+  if (options.omitFileHeader) args.push("--file-style=omit", "--file-decoration-style=omit");
+  const result = await run(args, { cwd, stdin: patch, env: { COLORTERM: "truecolor" } });
   if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `delta exited with status ${result.exitCode}`);
   return result.stdout;
 }

@@ -9,7 +9,7 @@ import { focusReport, lineSummary, patchBody, selectionReport, changeWord } from
 import { formatNumbers } from "../selection.ts";
 import type { FileChange, FileHistory } from "../types.ts";
 import { tuicrCommandForCommit, tuicrCommandForPullRequest } from "../tuicr.ts";
-import { deltaInstalled, renderWithDelta, type DiffRenderer } from "../delta.ts";
+import { deltaInstalled, renderWithDelta, type DeltaOptions, type DiffRenderer } from "../delta.ts";
 import { parseAnsi } from "./ansi.ts";
 import { diffLine, fit, span, theme, toStyled, type Line } from "./styled.ts";
 
@@ -23,7 +23,7 @@ export interface AppOptions {
   /** Renderer for the full diff view. `t` switches it while the interface runs. */
   diffRenderer?: DiffRenderer;
   /** Renders a unified diff with delta at a width. Defaults to running the `delta` command. */
-  renderDelta?: (patch: string, width: number) => Promise<string>;
+  renderDelta?: (patch: string, width: number, options: DeltaOptions) => Promise<string>;
   /** Runs an interactive command with the terminal and extra environment variables. Returns its exit status. */
   launch?: (command: string[], env?: Record<string, string>) => Promise<number>;
 }
@@ -67,7 +67,7 @@ export class TrailApp {
   private lastReport: string | null = null;
   /** In focus mode, list only files that the focus PR changes. */
   private focusOnly: boolean;
-  private readonly rangePatches = new Map<string, Promise<string>>();
+  private readonly patches = new Map<string, Promise<string>>();
   private readonly deltaOutput = new Map<string, Promise<Line[]>>();
   private diffRenderer: DiffRenderer;
   private renderToken = 0;
@@ -324,22 +324,25 @@ export class TrailApp {
     return [...new Set(entry.changes.flatMap((change) => (change.oldPath ? [change.oldPath, change.path] : [change.path])))];
   }
 
-  /** Returns an entry's complete patch. PR mode diffs from before the first commit to after the last commit. */
-  private patchText(entry: Entry): Promise<string> {
-    if (entry.changes.length === 1) return this.options.analyzer.analyze(entry.changes[0]!).then((a) => a.patch.text);
-    const key = `${entry.firstOid}..${entry.lastOid}`;
-    let cached = this.rangePatches.get(key);
+  /**
+   * Returns an entry's complete patch with `contextLines` unchanged lines around each change.
+   * PR mode diffs from before the first commit to after the last commit.
+   */
+  private patchText(entry: Entry, contextLines = 3): Promise<string> {
+    if (entry.changes.length === 1 && contextLines === 3) return this.options.analyzer.analyze(entry.changes[0]!).then((a) => a.patch.text);
+    const key = `${entry.firstOid}..${entry.lastOid}:U${contextLines}`;
+    let cached = this.patches.get(key);
     if (!cached) {
+      const paths = this.entryPaths(entry);
       const parent = this.options.model.commits.get(entry.firstOid)?.parents[0] ?? null;
-      cached = this.options.git.rangePatch(parent, entry.lastOid, this.entryPaths(entry)).then((patch) => patch.text);
-      this.rangePatches.set(key, cached);
+      cached = (
+        entry.changes.length === 1
+          ? this.options.git.commitPatch(entry.lastOid, paths, contextLines)
+          : this.options.git.rangePatch(parent, entry.lastOid, paths, contextLines)
+      ).then((patch) => patch.text);
+      this.patches.set(key, cached);
     }
     return cached;
-  }
-
-  /** Returns an entry's hunk lines without file headers. */
-  private diffFor(entry: Entry): Promise<string[]> {
-    return this.patchText(entry).then(patchBody);
   }
 
   private deltaAvailable(): boolean {
@@ -347,16 +350,20 @@ export class TrailApp {
   }
 
   /**
-   * Returns the styled lines for the full diff view.
+   * Returns the styled diff lines for the full diff view (`full`) or the selected change panel (`preview`).
+   * A preview uses one line of context and, with delta, omits the file header that the panel already shows.
    * If delta fails, the view falls back to the built-in renderer and the footer shows delta's error.
    */
-  private async styledDiff(entry: Entry, width: number): Promise<Line[]> {
+  private async styledDiff(entry: Entry, width: number, mode: "full" | "preview"): Promise<Line[]> {
+    const preview = mode === "preview";
     if (this.diffRenderer === "delta") {
-      const key = `${entry.firstOid}..${entry.lastOid}:${width}`;
+      const key = `${entry.firstOid}..${entry.lastOid}:${width}:${mode}`;
       let cached = this.deltaOutput.get(key);
       if (!cached) {
-        const render = this.options.renderDelta ?? ((patch: string, w: number) => renderWithDelta(patch, w, this.options.git.root));
-        cached = this.patchText(entry).then((patch) => (patch.trim() === "" ? [] : render(patch, width).then(parseAnsi)));
+        const render = this.options.renderDelta ?? ((patch: string, w: number, o: DeltaOptions) => renderWithDelta(patch, w, this.options.git.root, o));
+        cached = this.patchText(entry, preview ? 1 : 3).then((patch) =>
+          patch.trim() === "" ? [] : render(patch, width, { omitFileHeader: preview }).then((text) => trimBlankStart(parseAnsi(text))),
+        );
         this.deltaOutput.set(key, cached);
       }
       try {
@@ -368,7 +375,8 @@ export class TrailApp {
         this.footer.content = toStyled([fit(this.footerLine(), this.width)]);
       }
     }
-    return (await this.diffFor(entry)).map(diffLine);
+    const body = patchBody(await this.patchText(entry));
+    return (preview ? compactDiff(body, 1) : body).map(diffLine);
   }
 
   // ----- Rendering -----
@@ -406,16 +414,16 @@ export class TrailApp {
     if (this.view === "diff") {
       this.detailBox.title = ` DIFF ${current.entry.label} ${current.file.path} `;
       this.detailText.content = toStyled([[span("Loading diff…", { fg: theme.muted })]]);
-      void this.styledDiff(current.entry, layout.detailInner.width).then((lines) => {
+      void this.styledDiff(current.entry, layout.detailInner.width, "full").then((lines) => {
         if (token !== this.renderToken) return;
         this.detailText.content = toStyled(this.diffLines(current.entry, lines, layout.detailInner.width, layout.detailInner.height));
       });
     } else {
       this.detailBox.title = " SELECTED CHANGE ";
       this.detailText.content = toStyled(this.detailLines(current, null, [], layout.detailInner.width, layout.detailInner.height));
-      void Promise.all([this.analyses(current.entry), this.diffFor(current.entry)]).then(([analyses, diff]) => {
+      void Promise.all([this.analyses(current.entry), this.styledDiff(current.entry, layout.detailInner.width, "preview")]).then(([analyses, preview]) => {
         if (token !== this.renderToken) return;
-        this.detailText.content = toStyled(this.detailLines(current, analyses, diff, layout.detailInner.width, layout.detailInner.height));
+        this.detailText.content = toStyled(this.detailLines(current, analyses, preview, layout.detailInner.width, layout.detailInner.height));
       });
     }
   }
@@ -571,7 +579,7 @@ export class TrailApp {
   private detailLines(
     current: NonNullable<ReturnType<TrailApp["currentEntry"]>>,
     analyses: ChangeAnalysis[] | null,
-    diff: string[],
+    preview: Line[],
     width: number,
     height: number,
   ): Line[] {
@@ -635,12 +643,12 @@ export class TrailApp {
     }
 
     const room = height - lines.length - 1;
-    if (diff.length > 0 && room > 1) {
+    if (preview.length > 0 && room > 1) {
       lines.push([]);
-      const compact = compactDiff(diff, 1);
-      const shown = compact.slice(0, room - 1);
-      lines.push(...shown.map(diffLine));
-      if (compact.length > shown.length) lines.push([span(`… ${compact.length - shown.length} more line${compact.length - shown.length === 1 ? "" : "s"}. Press Enter for the full diff.`, { fg: theme.muted })]);
+      const shown = preview.slice(0, room - 1);
+      lines.push(...shown);
+      const hidden = preview.length - shown.length;
+      if (hidden > 0) lines.push([span(`… ${hidden} more line${hidden === 1 ? "" : "s"}. Press Enter for the full diff.`, { fg: theme.muted })]);
     }
     return lines.slice(0, height).map((line) => fit(line, width));
   }
@@ -781,6 +789,12 @@ export function compactDiff(lines: string[], context: number): string[] {
     }
     return false;
   });
+}
+
+/** Removes blank lines from the start of rendered output. */
+function trimBlankStart(lines: Line[]): Line[] {
+  const first = lines.findIndex((line) => line.some((part) => part.text.trim() !== ""));
+  return first === -1 ? [] : lines.slice(first);
 }
 
 /** Returns the typed character for a key without Ctrl or Alt, or an empty string. */
