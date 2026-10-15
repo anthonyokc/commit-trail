@@ -138,8 +138,9 @@ With one PR number, commit-trail runs in focus mode. The file list shows only th
 | `j` / `k` | Select the next or previous file |
 | `h` / `l` | Move backward or forward through the selected file's changes |
 | `Enter` | Show the full diff of the selected change |
-| `e` | In the diff view, show 10 more unchanged lines around each change. A click on a `⋯ N unchanged lines` row does the same |
-| `E` | In the diff view, show the whole file. Press `E` again to return to the changes |
+| `e` | In the preview or the diff view, show 10 more hidden lines at each end of every hidden region |
+| `E` | In the preview or the diff view, show the whole file. Press `E` again to return to the changes |
+| `J` / `K` | Scroll the preview in the selected change panel |
 | `t` | In the diff view, switch the diff renderer: pierre, delta (if installed), built-in |
 | `D` | Open the selected diff in a pager: delta in delta mode, Git's pager otherwise |
 | `Esc` | Return to the file history, or clear the search |
@@ -158,7 +159,8 @@ The mouse also works:
 
 - Click a file in the file list to select it.
 - In the selected change panel, click a commit under "Earlier changes", "Later changes", or "Parallel" to select that change. Click elsewhere in the panel to open the full diff view.
-- In the full diff view, click a `⋯ N unchanged lines` row to show more lines, and scroll with the wheel.
+- In the preview or the full diff view, click a `Show` action on a `⋯ N hidden lines` row to reveal hidden lines.
+- Scroll the preview or the full diff view with the wheel.
 
 While commit-trail captures the mouse, most terminals select text when you hold Shift (Option in iTerm2) while you drag.
 
@@ -170,9 +172,9 @@ The `r` and `R` keys write reports to the system temporary directory, in `commit
 
 ### Diffs
 
-The selected change panel shows a short preview of the diff, with 2 unchanged lines around each change. The full diff view (`Enter`) shows 5 unchanged lines. The `preview_context_lines` and `context_lines` settings change these numbers. In the full diff view, `e` adds 10 lines and `E` shows the whole file.
+The selected change panel shows a short preview of the diff, with 2 unchanged lines around each change. The full diff view (`Enter`) shows 5 unchanged lines. The `preview_context_lines` and `context_lines` settings change these numbers. The preview and the full diff view each keep their own expansion. In both, `e` reveals 10 more lines at each end of every hidden region, and `E` shows the whole file. A preview longer than the panel scrolls with the wheel or `J`/`K`, and marker rows count the lines above and below.
 
-Instead of Git's `@@ -12,2 +12,3 @@ tar_option_set(` header, each hunk starts with a heading such as `Lines 12–14 · tar_option_set(`. The heading uses the new file's line numbers. The text after `·` is the nearest earlier line that Git recognizes as a function or section name. In the full diff view, a `⋯ 11 unchanged lines` row before the heading counts the hidden lines.
+Instead of Git's `@@ -12,2 +12,3 @@ tar_option_set(` header, each hunk starts with a heading such as `Lines 12–14 · tar_option_set(`. The heading uses the new file's line numbers. The text after `·` is the nearest earlier line that Git recognizes as a function or section name. With pierre, a `⋯ 27 hidden lines   ↓ Show 10 lines below   ↑ Show 10 lines above   Show all 27` row stands for each hidden region, including the region after the last change. The directions refer to the neighboring changes. Click `↓ Show 10 lines below` to reveal the lines just below the change above the row, `↑ Show 10 lines above` to reveal the lines just above the change below the row, or `Show all` to reveal the whole region. The region at the start of the file offers only `↑`, and the region after the last change offers only `↓`. A region with 10 or fewer hidden lines offers one `Show N lines` action. delta and the built-in renderer show the hidden-line count only, and `e`/`E` add Git context lines instead.
 
 Diffs use one of three renderers:
 
