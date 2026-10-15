@@ -136,8 +136,8 @@ With one PR number, commit-trail runs in focus mode. The file list shows only th
 | `j` / `k` | Select the next or previous file |
 | `h` / `l` | Move backward or forward through the selected file's changes |
 | `Enter` | Show the full diff of the selected change |
-| `t` | In the diff view, switch between delta and the built-in diff renderer |
-| `D` | Open the selected diff in a pager: delta in delta mode, Git's pager in built-in mode |
+| `t` | In the diff view, switch the diff renderer: delta (if installed), pierre, built-in |
+| `D` | Open the selected diff in a pager: delta in delta mode, Git's pager otherwise |
 | `Esc` | Return to the file history, or clear the search |
 | `p` | Switch between the commit timeline and the PR timeline |
 | `a` | In focus mode, switch between the focus PR's files and all files |
@@ -156,19 +156,24 @@ Changes on separate branches appear in separate lanes. Git defines no order betw
 
 The `r` and `R` keys write reports to the system temporary directory, in `commit-trail/`. To use a different directory, start commit-trail with `--report-dir <path>`.
 
-### Diffs and delta
+### Diffs
 
-The selected change panel shows a short preview of the diff, with one unchanged line on each side of each change. The full diff view (`Enter`) shows three unchanged lines. Both use one of two renderers:
+The selected change panel shows a short preview of the diff, with one unchanged line on each side of each change. The full diff view (`Enter`) shows three unchanged lines. Both use one of three renderers:
 
-- delta: commit-trail sends the patch to `delta --paging=never` at the panel's width and shows delta's colored output in the panel. delta reads its settings from your Git config, so options such as `side-by-side`, `line-numbers`, and `features` apply. The preview omits delta's file header, because the panel already names the file. `h`/`l` and scrolling keep working.
-- built-in: commit-trail colors the unified diff itself.
+- delta: commit-trail sends the patch to `delta --paging=never` at the panel's width and shows delta's colored output in the panel. delta reads its settings from your Git config, so options such as `side-by-side`, `line-numbers`, and `features` apply. This renderer requires delta.
+- pierre: commit-trail parses the patch with [@pierre/diffs](https://diffs.com) and highlights it with [Shiki](https://shiki.style), inside commit-trail. It shows line numbers, tints added and removed lines, and marks the changed words. At 120 columns or more, it shows old and new lines side by side. This renderer needs no other program. The `pierre_theme` setting selects the Shiki theme.
+- built-in: commit-trail colors the unified diff without syntax highlighting.
 
-By default (`auto`), commit-trail uses delta if delta is installed. To choose a renderer, set `diff` in the config file or start commit-trail with `--diff`. Press `t` to switch renderers while commit-trail runs. If delta exits with an error, commit-trail shows the built-in diff and the error in the footer.
+In the preview, delta and pierre omit the file header, because the panel already names the file.
+
+By default (`auto`), commit-trail uses delta if delta is installed, and pierre otherwise. To choose a renderer, set `diff` in the config file or start commit-trail with `--diff`. Press `t` to switch renderers while commit-trail runs. If delta or pierre fails, commit-trail shows the built-in diff and the error in the footer.
+
+The first pierre diff of each language takes about one second, while Shiki loads the grammar. Later diffs take a few milliseconds.
 
 The `D` key suspends commit-trail and opens the selected diff in a pager. commit-trail resumes when you quit the pager.
 
 - In delta mode, `D` runs `git -c core.pager='delta --paging=always' show <commit> -- <file>`. delta's navigation keys (`n`, `N`) and search work there.
-- In built-in mode, `D` runs `git show <commit> -- <file>` with the pager from your Git config.
+- In pierre and built-in mode, `D` runs `git show <commit> -- <file>` with the pager from your Git config.
 - In the PR timeline, `D` shows `git diff` from before the PR's first commit to its last commit.
 - commit-trail adds `-+F` to `LESS`, so `less` stays open when the diff fits on one screen. Your other `LESS` options stay in effect.
 
@@ -206,7 +211,7 @@ A report never claims that a later change resolves a review concern. It shows th
 | `--copy` | `report` only: copy the Markdown report to the clipboard |
 | `--max-diff-lines <n>` | Show at most `n` diff lines for each patch in a report. The default is 60 |
 | `--report-dir <path>` | Write reports from the `r` and `R` keys to `<path>` |
-| `--diff <renderer>` | Renderer for the full diff view and the `D` key: `auto`, `delta`, or `builtin`. This option overrides the config file. `auto` uses delta if it is on `PATH`. `delta` stops with an error if delta is not on `PATH` |
+| `--diff <renderer>` | Diff renderer for the preview, the full diff view, and the `D` key: `auto`, `delta`, `pierre`, or `builtin`. This option overrides the config file. `auto` uses delta if it is on `PATH`, and pierre otherwise. `delta` stops with an error if delta is not on `PATH` |
 | `--config <path>` | Read settings from `<path>` instead of the default config file |
 
 ### Configuration
@@ -214,14 +219,19 @@ A report never claims that a later change resolves a review concern. It shows th
 commit-trail reads settings from `$XDG_CONFIG_HOME/commit-trail/config.toml`. If `XDG_CONFIG_HOME` is not set, the path is `~/.config/commit-trail/config.toml`. If the file does not exist, commit-trail uses the defaults.
 
 ```toml
-# Renderer for the full diff view and the D key: "auto", "delta", or "builtin".
-# "auto" uses delta if it is on PATH. "delta" stops with an error if it is not.
-diff = "delta"
+# Diff renderer: "auto", "delta", "pierre", or "builtin".
+# "auto" uses delta if it is on PATH, and pierre otherwise.
+# "delta" stops with an error if delta is not on PATH.
+diff = "pierre"
+
+# Shiki theme for the pierre renderer, for example "catppuccin-mocha" or "github-dark".
+pierre_theme = "pierre-dark"
 ```
 
 | Setting | Values | Default |
 |---|---|---|
-| `diff` | `"auto"`, `"delta"`, `"builtin"` | `"auto"` |
+| `diff` | `"auto"`, `"delta"`, `"pierre"`, `"builtin"` | `"auto"` |
+| `pierre_theme` | A [Shiki theme name](https://shiki.style/themes), or `"pierre-dark"` or `"pierre-light"` | `"pierre-dark"` |
 
 A command-line option overrides the matching setting. An unknown setting or an invalid value stops commit-trail with an error that names the file.
 
