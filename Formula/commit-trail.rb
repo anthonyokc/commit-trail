@@ -38,7 +38,7 @@ class CommitTrail < Formula
     bun = buildpath/"build-tools/bun"
     chmod 0755, bun
     system bun, "install", "--frozen-lockfile"
-    system bun, "build", "--compile", "--minify", "src/main.ts", "--outfile", "commit-trail"
+    system bun, "build", "--compile", "--minify", "src/main.ts", "src/pierre-worker.ts", "--outfile", "commit-trail"
     bin.install "commit-trail"
   end
 

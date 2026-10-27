@@ -11,7 +11,7 @@ import type { FileChange, FileHistory } from "../types.ts";
 import { tuicrCommandForCommit, tuicrCommandForPullRequest } from "../tuicr.ts";
 import { deltaInstalled, renderWithDelta, type DeltaOptions, type DiffRenderer } from "../delta.ts";
 import { describeHunk, parseHunkHeader } from "../hunk.ts";
-import { EXPAND_STEP, renderWithPierre, type DiffAction, type Expansion, type GapAction, type PierreOptions, type RenderedDiff } from "../pierre.ts";
+import { EXPAND_STEP, renderWithPierreInWorker, type DiffAction, type Expansion, type GapAction, type PierreOptions, type RenderedDiff } from "../pierre.ts";
 import { parseAnsi } from "./ansi.ts";
 import { diffLine, fit, span, theme, toStyled, type Line } from "./styled.ts";
 
@@ -30,7 +30,7 @@ export interface AppOptions {
   previewContextLines?: number;
   /** Shiki theme for the pierre renderer. Defaults to "pierre-dark". */
   pierreTheme?: string;
-  /** Renders a unified diff with @pierre/diffs. Defaults to `renderWithPierre`. */
+  /** Renders a unified diff with @pierre/diffs. Defaults to `renderWithPierreInWorker`. */
   renderPierre?: (patch: string, options: PierreOptions) => Promise<RenderedDiff>;
   /** Renders a unified diff with delta at a width. Defaults to running the `delta` command. */
   renderDelta?: (patch: string, width: number, options: DeltaOptions) => Promise<string>;
@@ -526,7 +526,7 @@ export class TrailApp {
         cached = this.patchText(entry, context).then(async (patch): Promise<RenderedDiff> => {
           if (patch.trim() === "") return { lines: [], gapRows: [], actions: [] };
           if (renderer === "pierre") {
-            const render = this.options.renderPierre ?? renderWithPierre;
+            const render = this.options.renderPierre ?? renderWithPierreInWorker;
             const contents = await this.fileContents(entry);
             return render(patch, { width, theme: this.options.pierreTheme, omitFileHeader: preview, contents, expansion });
           }
@@ -542,7 +542,7 @@ export class TrailApp {
         this.rendered.delete(key);
         this.diffRenderer = "builtin";
         this.status = `${renderer} failed, so the built-in diff is shown: ${error instanceof Error ? error.message : String(error)}`;
-        this.footer.content = toStyled([fit(this.footerLine(), this.width)]);
+        if (!this.renderer.isDestroyed) this.footer.content = toStyled([fit(this.footerLine(), this.width)]);
       }
     }
     const body = patchBody(await this.patchText(entry, context));
@@ -624,7 +624,7 @@ export class TrailApp {
       this.detailText.content = toStyled([[span("Loading diff…", { fg: theme.muted })]]);
       show = () =>
         this.styledDiff(current.entry, layout.detailInner.width, "full").then((diff) => {
-          if (token !== this.renderToken) return;
+          if (token !== this.renderToken || this.renderer.isDestroyed) return;
           this.detailText.content = toStyled(this.diffLines(current.entry, diff, layout.detailInner.width, layout.detailInner.height));
         });
     } else {
@@ -632,7 +632,7 @@ export class TrailApp {
       this.detailText.content = toStyled(this.detailLines(current, null, null, layout.detailInner.width, layout.detailInner.height));
       show = () =>
         Promise.all([this.analyses(current.entry), this.styledDiff(current.entry, layout.detailInner.width, "preview")]).then(([analyses, preview]) => {
-          if (token !== this.renderToken) return;
+          if (token !== this.renderToken || this.renderer.isDestroyed) return;
           this.detailText.content = toStyled(this.detailLines(current, analyses, preview, layout.detailInner.width, layout.detailInner.height));
         });
     }

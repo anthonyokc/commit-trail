@@ -12,7 +12,7 @@
     "start": "bun src/main.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build --compile --minify ./src/main.ts --outfile dist/commit-trail"
+    "build": "bun build --compile --minify ./src/main.ts ./src/pierre-worker.ts --outfile dist/commit-trail"
   },
   "dependencies": {
     "@opentui/core": "0.6.5",

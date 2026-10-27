@@ -7,6 +7,7 @@ import {
   type FileDiffMetadata,
 } from "@pierre/diffs";
 import { describeHunk } from "./hunk.ts";
+import type { PierreRequest } from "./pierre-worker.ts";
 import { fit, span, type Line, type Span } from "./tui/styled.ts";
 
 export const DEFAULT_PIERRE_THEME = "pierre-dark";
@@ -140,6 +141,84 @@ export async function renderWithPierre(patch: string, options: PierreOptions): P
     layout(rows, { tokens, palette, width: options.width, digits, split }, out);
   }
   return out;
+}
+
+/**
+ * Location of the worker entry point. A compiled executable stores its modules under `/$bunfs/` and resolves
+ * a worker entry point from the bundle root. Running from source needs the absolute file URL.
+ */
+const WORKER_ENTRY = import.meta.url.includes("/$bunfs/") ? "./pierre-worker.ts" : new URL("./pierre-worker.ts", import.meta.url).href;
+
+type WorkerReply = { id: number; result: RenderedDiff } | { id: number; error: string };
+
+interface PendingRender {
+  patch: string;
+  options: PierreOptions;
+  resolve: (diff: RenderedDiff) => void;
+  reject: (error: unknown) => void;
+}
+
+let worker: Worker | null = null;
+let workerFailed = false;
+let nextRequest = 0;
+/** Requests in the order they were made, including the request that the worker is rendering. */
+const pending = new Map<number, PendingRender>();
+let rendering: number | null = null;
+
+/**
+ * Renders like `renderWithPierre`, in a worker thread. Syntax highlighting a large file takes hundreds of
+ * milliseconds, and the worker keeps that work away from the thread that reads keys and draws the screen.
+ * The worker renders one request at a time and starts with the newest waiting request, which belongs to
+ * the change on screen. If the worker cannot start or stops, pending and later renders run in the calling thread.
+ */
+export function renderWithPierreInWorker(patch: string, options: PierreOptions): Promise<RenderedDiff> {
+  const thread = workerFailed ? null : pierreWorker();
+  if (!thread) return renderWithPierre(patch, options);
+  return new Promise((resolve, reject) => {
+    pending.set(nextRequest++, { patch, options, resolve, reject });
+    sendNewest(thread);
+  });
+}
+
+function sendNewest(thread: Worker): void {
+  if (rendering !== null || pending.size === 0) return;
+  const id = [...pending.keys()].at(-1)!;
+  const request = pending.get(id)!;
+  rendering = id;
+  thread.postMessage({ id, patch: request.patch, options: request.options } satisfies PierreRequest);
+}
+
+function pierreWorker(): Worker | null {
+  if (worker) return worker;
+  let thread: Worker;
+  try {
+    thread = new Worker(WORKER_ENTRY);
+  } catch {
+    workerFailed = true;
+    return null;
+  }
+  // An idle worker must not keep the process running after the interface closes.
+  thread.unref();
+  thread.onmessage = (event: MessageEvent<WorkerReply>) => {
+    const request = pending.get(event.data.id);
+    pending.delete(event.data.id);
+    rendering = null;
+    if ("error" in event.data) request?.reject(new Error(event.data.error));
+    else request?.resolve(event.data.result);
+    sendNewest(thread);
+  };
+  thread.onerror = () => {
+    workerFailed = true;
+    thread.terminate();
+    worker = null;
+    rendering = null;
+    for (const [id, request] of pending) {
+      pending.delete(id);
+      renderWithPierre(request.patch, request.options).then(request.resolve, request.reject);
+    }
+  };
+  worker = thread;
+  return thread;
 }
 
 type TokenSource = { deletion: (index: number) => Span[]; addition: (index: number) => Span[] };
