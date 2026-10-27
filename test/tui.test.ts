@@ -84,6 +84,38 @@ test("the interface shows the file timeline and moves between changes", async ()
   await setup.dispose();
 });
 
+test("rapid file moves render only the file that stays selected", async () => {
+  const three = await FixtureRepo.create();
+  await three.commit("initial", { "a.txt": numberedFile(12), "b.txt": numberedFile(12), "c.txt": numberedFile(12) });
+  await three.checkout("feat-1", "main");
+  await three.commit("change all", { "a.txt": numberedFile(12, { 6: "a" }), "b.txt": numberedFile(12, { 6: "b" }), "c.txt": numberedFile(12, { 6: "c" }) });
+  await three.checkout("feat-2", "feat-1");
+  await three.checkout("main");
+  const rendered: string[] = [];
+  const renderPierre: AppOptions["renderPierre"] = async (patch) => {
+    const path = /^\+\+\+ b\/(.+)$/m.exec(patch)?.[1] ?? "?";
+    rendered.push(path);
+    return { lines: [[{ text: `RENDERED ${path}` }]], gapRows: [], actions: [] };
+  };
+  const { setup, frameWith } = await startApp({ diffRenderer: "pierre", renderPierre }, three);
+  try {
+    await frameWith("RENDERED a.txt");
+    // A held key passes over b.txt.
+    await setup.mockInput.pressKey("j");
+    await setup.mockInput.pressKey("j");
+    await frameWith("RENDERED c.txt");
+    expect(rendered).not.toContain("b.txt");
+
+    // After the selection settles, moving back loads the passed-over file.
+    await Bun.sleep(200);
+    await setup.mockInput.pressKey("k");
+    await frameWith("RENDERED b.txt");
+  } finally {
+    await setup.dispose();
+    await three.dispose();
+  }
+});
+
 test("delta renders the preview and the full diff, t switches renderers, and D opens a pager", async () => {
   const calls: { width: number; omitFileHeader: boolean }[] = [];
   const { setup, launched, launchEnv, frameWith } = await startApp({
