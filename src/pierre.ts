@@ -121,7 +121,8 @@ export async function renderWithPierre(patch: string, options: PierreOptions): P
 
   for (const file of files) {
     const lang = getFiletypeFromFileName(file.name);
-    const highlighter = await getSharedHighlighter({ themes: [theme], langs: [lang] });
+    // The Oniguruma engine highlights about twice as fast as Shiki's default JavaScript regex engine.
+    const highlighter = await getSharedHighlighter({ themes: [theme], langs: [lang], preferredHighlighter: "shiki-wasm" });
     const result = renderDiffWithHighlighter(
       file,
       highlighter,
