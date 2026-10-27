@@ -81,8 +81,8 @@ test("the PR picker filters files without hiding their changes from other PRs", 
     expect(frame).toContain("All PRs  3 files");
     expect(frame).toContain("#1 PR 1 from feat-1  2 files");
     expect(frame).toContain("#4 PR 4 from feat-2  2 files");
-    await setup.mockInput.pressKey("j");
-    await setup.mockInput.pressKey("j");
+    await setup.mockInput.pressArrow("down");
+    await setup.mockInput.pressArrow("down");
     await setup.mockInput.pressEnter();
     frame = await frameWith("Files: PR #4");
     expect(frame).toContain("second-only.txt");
@@ -95,14 +95,14 @@ test("the PR picker filters files without hiding their changes from other PRs", 
     await setup.mockInput.pressKey("f");
     frame = await frameWith("FILTER FILES BY PR");
     expect(frame).toContain("› ● #4");
-    await setup.mockInput.pressKey("k");
+    await setup.mockInput.pressArrow("up");
     await setup.mockInput.pressEscape();
     frame = await frameWith("SELECTED CHANGE");
     expect(frame).toContain("Files: PR #4");
     expect(frame).toContain("PR #4: PR 4 from feat-2");
 
     await setup.mockInput.pressKey("f");
-    await setup.mockInput.pressKey("g");
+    await setup.mockInput.pressKey("HOME");
     await setup.mockInput.pressEnter();
     frame = await frameWith("Files: all PRs");
     expect(frame).toContain("first-only.txt");
@@ -139,6 +139,46 @@ test("the PR picker combines with path search and preserves the focus shortcut",
     expect(frame).not.toContain("second-only.txt");
     await setup.mockInput.pressKey("a");
     await frameWith("Files: all PRs");
+  } finally {
+    await setup.dispose();
+  }
+});
+
+test("typing in the PR picker filters the list by PR number and title words", async () => {
+  const { setup, frameWith } = await startApp({}, repo, { focus: null });
+  try {
+    await frameWith("Files: all PRs");
+    await setup.mockInput.pressKey("f");
+    await frameWith("FILTER FILES BY PR");
+
+    // Letters go to the filter text. They do not run shortcuts such as j, f, and q.
+    await setup.mockInput.typeText("from feat-2");
+    let frame = await frameWith("Filter: from feat-2");
+    expect(frame).toContain("›   #4 PR 4 from feat-2  2 files");
+    expect(frame).not.toContain("#1 PR 1 from feat-1");
+    expect(frame).not.toContain("All PRs");
+
+    await setup.mockInput.typeText("q");
+    frame = await frameWith("No PR matches the filter.");
+    // Enter does nothing while no PR matches.
+    await setup.mockInput.pressEnter();
+    frame = await frameWith("No PR matches the filter.");
+    expect(frame).toContain("FILTER FILES BY PR");
+
+    await setup.mockInput.pressBackspace();
+    await frameWith("›   #4 PR 4 from feat-2");
+    await setup.mockInput.pressKey("u", { ctrl: true });
+    frame = await frameWith("Type a PR number or words from a title.");
+    expect(frame).toContain("All PRs  3 files");
+
+    // Words match in any order, ignoring case.
+    await setup.mockInput.typeText("FEAT-1 #1");
+    frame = await frameWith("›   #1 PR 1 from feat-1");
+    expect(frame).not.toContain("#4 PR 4");
+    await setup.mockInput.pressEnter();
+    frame = await frameWith("Files: PR #1");
+    expect(frame).toContain("first-only.txt");
+    expect(frame).not.toContain("second-only.txt");
   } finally {
     await setup.dispose();
   }
@@ -189,10 +229,11 @@ test("the PR picker scrolls to empty PRs and includes ambiguous candidate files"
     let frame = await frameWith("FILTER FILES BY PR");
     expect(frame).toContain("#4 PR 4 from feat-2  2 files");
     expect(frame).not.toContain("Context only");
-    await setup.mockInput.pressKey("G", { shift: true });
+    await setup.mockInput.pressKey("END");
     frame = await frameWith("›   #30 Empty PR 30  0 files");
+    // One page is the panel height minus the filter row.
     await setup.mockInput.pressKey("\x1b[5~");
-    await frameWith("›   #11 Empty PR 11  0 files");
+    await frameWith("›   #12 Empty PR 12  0 files");
     await setup.mockInput.pressKey("\x1b[6~");
     frame = await frameWith("›   #30 Empty PR 30  0 files");
     const rows = frame.split("\n");
@@ -202,7 +243,7 @@ test("the PR picker scrolls to empty PRs and includes ambiguous candidate files"
     expect(frame).toContain("Files: PR #30");
 
     await setup.mockInput.pressKey("f");
-    await setup.mockInput.pressKey("g");
+    await setup.mockInput.pressKey("HOME");
     await setup.mockInput.pressArrow("down");
     await setup.mockInput.pressArrow("down");
     await setup.mockInput.pressEnter();
