@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { renderWithPierre, type Expansion } from "../src/pierre.ts";
+import { renderWithPierre, renderWithPierreInWorker, type Expansion } from "../src/pierre.ts";
 import type { Line } from "../src/tui/styled.ts";
 
 const PATCH = [
@@ -135,4 +135,13 @@ test("a region with 10 or fewer hidden lines offers one action, and whole shows 
   expect(whole.gapRows).toEqual([]);
   // 59 unchanged lines, one removed, and one added. Nothing is hidden, so no heading interrupts the file.
   expect(whole.lines.length).toBe(61);
+});
+
+test("the worker renders the same lines and actions as the calling thread", async () => {
+  const options = { width: 90, layout: "unified" as const, omitFileHeader: true, contents, expansion: expansion([[1, { down: 10, up: 0 }]]) };
+  expect(await renderWithPierreInWorker(FULL_PATCH, options)).toEqual(await renderWithPierre(FULL_PATCH, options));
+});
+
+test("the worker passes a render error to the caller", async () => {
+  await expect(renderWithPierreInWorker(PATCH, { width: 80, theme: "no-such-theme" })).rejects.toThrow();
 });

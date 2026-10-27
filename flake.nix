@@ -38,10 +38,12 @@
 
             bunDeps = bun2nix.fetchBunDeps { bunNix = ./bun.nix; };
 
-            # Match `bun run build`: `bun build --compile --minify ./src/main.ts`.
+            # Match `bun run build`: `bun build --compile --minify ./src/main.ts ./src/pierre-worker.ts`.
             # bun2nix defaults add --bytecode and --sourcemap, so drop them.
             bunCompileToBytecode = false;
             removeBunBuildFlags = [ "--sourcemap" ];
+            # The executable embeds the syntax highlighting worker only when the build lists its entry point.
+            extraBunBuildFlags = [ "src/pierre-worker.ts" ];
 
             nativeBuildInputs = [ pkgs.makeWrapper ];
 
