@@ -94,6 +94,12 @@ export class TrailApp {
   private detailTargets: { row: number; start: number; end: number; index: number }[] = [];
   private diffRenderer: DiffRenderer;
   private renderToken = 0;
+  /** Time of the last change to the shown entry, from `performance.now()`. */
+  private selectedAt = Number.NEGATIVE_INFINITY;
+  /** Time when the last diff load finished, from `performance.now()`. */
+  private loadedAt = Number.NEGATIVE_INFINITY;
+  /** Deferred diff load for the latest render during rapid selection changes. */
+  private loadTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private readonly renderer: CliRenderer,
@@ -570,6 +576,8 @@ export class TrailApp {
 
   render(): void {
     const token = ++this.renderToken;
+    clearTimeout(this.loadTimer);
+    this.loadTimer = undefined;
     const layout = this.layout();
     this.filesBox.visible = this.view === "history";
     this.historyBox.visible = this.view === "history";
@@ -598,27 +606,44 @@ export class TrailApp {
     }
     this.historyText.content = toStyled(this.historyLines(current, layout.historyInner.width, layout.historyInner.height));
     const shownKey = `${current.file.path}:${entryKey(current.entry)}`;
+    let rapid = false;
     if (shownKey !== this.previewKey) {
       this.previewKey = shownKey;
       this.previewScroll = 0;
+      // Keys that arrive while a diff loads can reach the app only after the load finishes. A selection change
+      // soon after the last selection change or load counts as rapid.
+      const now = performance.now();
+      rapid = now - Math.max(this.selectedAt, this.loadedAt) < RAPID_SELECTION_MS;
+      this.selectedAt = now;
     }
     this.visibleDiff = null;
 
+    let show: () => Promise<void>;
     if (this.view === "diff") {
       this.detailBox.title = ` DIFF ${current.entry.label} ${current.file.path} `;
       this.detailText.content = toStyled([[span("Loading diff…", { fg: theme.muted })]]);
-      void this.styledDiff(current.entry, layout.detailInner.width, "full").then((diff) => {
-        if (token !== this.renderToken) return;
-        this.detailText.content = toStyled(this.diffLines(current.entry, diff, layout.detailInner.width, layout.detailInner.height));
-      });
+      show = () =>
+        this.styledDiff(current.entry, layout.detailInner.width, "full").then((diff) => {
+          if (token !== this.renderToken) return;
+          this.detailText.content = toStyled(this.diffLines(current.entry, diff, layout.detailInner.width, layout.detailInner.height));
+        });
     } else {
       this.detailBox.title = " SELECTED CHANGE ";
       this.detailText.content = toStyled(this.detailLines(current, null, null, layout.detailInner.width, layout.detailInner.height));
-      void Promise.all([this.analyses(current.entry), this.styledDiff(current.entry, layout.detailInner.width, "preview")]).then(([analyses, preview]) => {
-        if (token !== this.renderToken) return;
-        this.detailText.content = toStyled(this.detailLines(current, analyses, preview, layout.detailInner.width, layout.detailInner.height));
-      });
+      show = () =>
+        Promise.all([this.analyses(current.entry), this.styledDiff(current.entry, layout.detailInner.width, "preview")]).then(([analyses, preview]) => {
+          if (token !== this.renderToken) return;
+          this.detailText.content = toStyled(this.detailLines(current, analyses, preview, layout.detailInner.width, layout.detailInner.height));
+        });
     }
+    const load = () => void show().finally(() => (this.loadedAt = performance.now()));
+    // During rapid selection changes, for example a held arrow key, only the change that stays selected for
+    // SETTLE_MS loads. Changes that are passed over start no Git commands and no syntax highlighting.
+    if (!rapid) return load();
+    this.loadTimer = setTimeout(() => {
+      this.loadTimer = undefined;
+      if (token === this.renderToken && !this.renderer.isDestroyed) load();
+    }, SETTLE_MS);
   }
 
   private headerLines(): Line[] {
@@ -1028,6 +1053,12 @@ export function compactDiff(lines: string[], context: number): string[] {
 }
 
 const RENDERER_NAMES: Record<DiffRenderer, string> = { delta: "delta", pierre: "pierre", builtin: "built-in" };
+
+/** A change to the shown entry within this many milliseconds of the previous change counts as rapid. */
+const RAPID_SELECTION_MS = 150;
+
+/** During rapid selection changes, an entry loads its diff after it stays selected for this many milliseconds. */
+const SETTLE_MS = 80;
 
 /** Context line count that makes Git include every line of the file. */
 const WHOLE_FILE = 1_000_000;
