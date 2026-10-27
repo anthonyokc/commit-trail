@@ -95,6 +95,16 @@ If a number in a range has no pull request, commit-trail reports that it skipped
 
 With one PR number, commit-trail runs in focus mode. The file list shows only the focus PR's files. Press `a` to show the files of every loaded PR.
 
+### Filter files by PR
+
+The picker lists the loaded PRs with their titles and file counts.
+
+1. Press `f` to open the picker.
+2. Use `j`/`k` or the arrow keys to select a PR or `All PRs`.
+3. Press `Enter` to apply the filter.
+
+The `Esc` key cancels the selection. The `All PRs` option removes the PR filter. The PR filter combines with the path search. Each matching file keeps its full timeline across all loaded PRs.
+
 ### Keys
 
 | Key | Action |
@@ -109,6 +119,7 @@ With one PR number, commit-trail runs in focus mode. The file list shows only th
 | `D` | Open the selected diff in a pager: delta in delta mode, Git's pager otherwise |
 | `Esc` | Return to the file history, or clear the search |
 | `p` | Switch between the commit timeline and the PR timeline |
+| `f` | Choose a PR to filter the files, or choose `All PRs` |
 | `a` | In focus mode, switch between the focus PR's files and all files |
 | `o` | Open the selected change's PR in tuicr (`tuicr pr <number>`) |
 | `O` | Open the selected commit in tuicr, limited to the file |
@@ -121,6 +132,7 @@ With one PR number, commit-trail runs in focus mode. The file list shows only th
 
 The mouse also works:
 
+- Click `Files: … ▾` in the header to open the PR picker. Click a PR to apply its filter.
 - Click a file in the file list to select it.
 - In the selected change panel, click a commit under "Earlier changes", "Later changes", or "Parallel" to select that change. Click elsewhere in the panel to open the full diff view.
 - In the preview or the full diff view, click a `Show` action on a `⋯ N hidden lines` row to reveal hidden lines.
