@@ -77,6 +77,9 @@ export class TrailApp {
   private lastReport: string | null = null;
   /** List only files changed by this PR, or every loaded PR when null. */
   private filePr: number | null;
+  /** Text typed in the PR picker. Only PRs whose label contains every typed word are listed. */
+  private pickerQuery = "";
+  /** Selected row among the PR picker rows that match `pickerQuery`. */
   private pickerIndex = 0;
   private pickerScroll = 0;
   private readonly patches = new Map<string, Promise<string>>();
@@ -174,6 +177,8 @@ export class TrailApp {
 
   handleKey(key: KeyEvent): void {
     if (this.searching) return this.handleSearchKey(key);
+    // The picker reads letters as filter text, so it receives keys before the q shortcut.
+    if (this.view === "pr-picker") return this.handlePrPickerKey(key);
     const name = key.name;
     if (name === "q" || (key.ctrl && name === "c")) return this.quit();
     if (this.view === "help") {
@@ -181,7 +186,6 @@ export class TrailApp {
       return this.render();
     }
     if (this.view === "diff") return this.handleDiffKey(key);
-    if (this.view === "pr-picker") return this.handlePrPickerKey(key);
 
     this.status = "";
     const char = printable(key);
@@ -224,33 +228,70 @@ export class TrailApp {
   private openPrPicker(): void {
     this.searching = false;
     this.view = "pr-picker";
-    this.pickerIndex = this.filePr === null ? 0 : this.options.model.selected.indexOf(this.filePr) + 1;
+    this.pickerQuery = "";
+    this.pickerIndex = Math.max(0, this.pickerChoices().indexOf(this.filePr));
     this.pickerScroll = 0;
     this.status = "";
     this.render();
   }
 
+  /**
+   * Returns the picker rows that match the typed text: `null` for All PRs, then each selected PR.
+   * A row matches when its label contains every space-separated word of the text, ignoring case.
+   */
+  private pickerChoices(): (number | null)[] {
+    const words = this.pickerQuery.toLowerCase().split(/\s+/).filter(Boolean);
+    return [null, ...this.options.model.selected].filter((pr) => {
+      const label = this.pickerLabel(pr).toLowerCase();
+      return words.every((word) => label.includes(word));
+    });
+  }
+
+  private pickerLabel(pr: number | null): string {
+    return pr === null ? "All PRs" : `#${pr} ${this.options.model.prs.get(pr)?.title ?? ""}`;
+  }
+
+  /**
+   * Typed characters filter the list. The arrow keys, Ctrl-N, Ctrl-P, PgUp, PgDn, Home, and End move the selection.
+   * Backspace deletes the last character, and Ctrl-U clears the text.
+   */
   private handlePrPickerKey(key: KeyEvent): void {
+    const name = key.name;
+    if (key.ctrl && name === "c") return this.quit();
     const char = printable(key);
-    const page = Math.max(1, this.layout().detailInner.height);
-    if (key.name === "escape" || char === "f") this.view = "history";
-    else if (key.name === "return") return this.selectPickerPr();
-    else if (key.name === "down" || char === "j") this.movePicker(1);
-    else if (key.name === "up" || char === "k") this.movePicker(-1);
-    else if (char === "g") this.movePicker(-this.options.model.selected.length - 1);
-    else if (char === "G") this.movePicker(this.options.model.selected.length + 1);
-    else if (key.name === "pagedown") this.movePicker(page);
-    else if (key.name === "pageup") this.movePicker(-page);
+    const page = Math.max(1, this.layout().detailInner.height - 1);
+    if (name === "escape") this.view = "history";
+    else if (name === "return") return this.selectPickerPr();
+    else if (name === "down" || (key.ctrl && name === "n")) this.movePicker(1);
+    else if (name === "up" || (key.ctrl && name === "p")) this.movePicker(-1);
+    else if (name === "pagedown") this.movePicker(page);
+    else if (name === "pageup") this.movePicker(-page);
+    else if (name === "home") this.movePicker(-Number.MAX_SAFE_INTEGER);
+    else if (name === "end") this.movePicker(Number.MAX_SAFE_INTEGER);
+    else if (name === "backspace") this.setPickerQuery(this.pickerQuery.slice(0, -1));
+    else if (key.ctrl && name === "u") this.setPickerQuery("");
+    else if (char) this.setPickerQuery(this.pickerQuery + char);
     else return;
     this.render();
   }
 
-  private movePicker(delta: number): void {
-    this.pickerIndex = Math.max(0, Math.min(this.options.model.selected.length, this.pickerIndex + delta));
+  /** Replaces the filter text and selects the first matching row. */
+  private setPickerQuery(query: string): void {
+    this.pickerQuery = query;
+    this.pickerIndex = 0;
+    this.pickerScroll = 0;
   }
 
+  private movePicker(delta: number): void {
+    const last = Math.max(0, this.pickerChoices().length - 1);
+    this.pickerIndex = Math.max(0, Math.min(last, this.pickerIndex + delta));
+  }
+
+  /** Applies the filter of the selected row. If no row matches the typed text, the picker stays open. */
   private selectPickerPr(): void {
-    this.applyPrFilter(this.pickerIndex === 0 ? null : this.options.model.selected[this.pickerIndex - 1]!);
+    const pr = this.pickerChoices()[this.pickerIndex];
+    if (pr === undefined) return;
+    this.applyPrFilter(pr);
     this.view = "history";
     this.render();
   }
@@ -397,9 +438,10 @@ export class TrailApp {
    */
   private handleDetailClick(screenX: number, screenY: number): void {
     if (this.view === "pr-picker") {
+      // Panel row 0 shows the filter text, so the first PR row is panel row 1.
       const row = screenY - this.detailText.screenY;
-      const index = row + this.pickerScroll;
-      if (row >= 0 && row < this.layout().detailInner.height && index <= this.options.model.selected.length) {
+      const index = row - 1 + this.pickerScroll;
+      if (row >= 1 && row < this.layout().detailInner.height && index < this.pickerChoices().length) {
         this.pickerIndex = index;
         this.selectPickerPr();
       }
@@ -738,7 +780,7 @@ export class TrailApp {
   }
 
   private footerLine(): Line {
-    if (this.view === "pr-picker") return [span(" j/k ↑/↓ Select  PgUp/PgDn Page  Enter Filter  Esc Cancel  q Quit", { fg: theme.muted })];
+    if (this.view === "pr-picker") return [span(" Type to filter  ↑/↓ Select  PgUp/PgDn Page  Enter Apply  Esc Cancel  Ctrl-C Quit", { fg: theme.muted })];
     if (this.searching) return [span(" Search: ", { fg: theme.accent }), span(this.query + "▏"), span("   Enter keep  Esc clear", { fg: theme.muted })];
     if (this.status) return [span(` ${this.status}`, { fg: theme.warning })];
     if (this.view === "diff") return [span(" j/k Scroll  d/u Page  h/l Change  e/E Expand  t Renderer  D Pager  o tuicr PR  O tuicr commit  Esc Back  q Quit", { fg: theme.muted })];
@@ -746,24 +788,34 @@ export class TrailApp {
     return [span(hints + (this.query ? `   [filter: ${this.query}]` : ""), { fg: theme.muted })];
   }
 
+  /** Returns the filter text row, then the matching PR rows that fit in `height - 1` rows. */
   private pickerLines(width: number, height: number): Line[] {
-    const choices = [null, ...this.options.model.selected];
+    const choices = this.pickerChoices();
+    const listHeight = Math.max(1, height - 1);
     if (this.pickerIndex < this.pickerScroll) this.pickerScroll = this.pickerIndex;
-    if (this.pickerIndex >= this.pickerScroll + height) this.pickerScroll = this.pickerIndex - height + 1;
-    return choices.slice(this.pickerScroll, this.pickerScroll + height).map((pr, offset) => {
+    if (this.pickerIndex >= this.pickerScroll + listHeight) this.pickerScroll = this.pickerIndex - listHeight + 1;
+    const lines: Line[] = [
+      fit([
+        span("Filter: ", { fg: theme.accent }),
+        span(this.pickerQuery + "▏"),
+        span(this.pickerQuery ? "" : "  Type a PR number or words from a title.", { fg: theme.muted }),
+      ], width),
+    ];
+    if (choices.length === 0) return [...lines, fit([span("No PR matches the filter.", { fg: theme.muted })], width)];
+    const rows = choices.slice(this.pickerScroll, this.pickerScroll + listHeight).map((pr, offset) => {
       const selected = this.pickerScroll + offset === this.pickerIndex;
       const style = selected ? { bg: theme.selectionBg } : {};
       const count = pr === null ? this.options.model.histories.length : this.options.model.histories.filter(
         (file) => file.changes.some((change) => changeBelongsTo(change, pr)),
       ).length;
-      const title = pr === null ? "All PRs" : `#${pr} ${this.options.model.prs.get(pr)?.title ?? ""}`;
       return fit([
         span(selected ? "› " : "  ", { ...style, fg: theme.accent }),
         span(pr === this.filePr ? "● " : "  ", { ...style, fg: theme.accent }),
-        span(`${title}  `, { ...style, bold: selected }),
+        span(`${this.pickerLabel(pr)}  `, { ...style, bold: selected }),
         span(`${count} file${count === 1 ? "" : "s"}`, { ...style, fg: theme.muted }),
       ], width, style);
     });
+    return [...lines, ...rows];
   }
 
   private fileRows(): FileRow[] {
@@ -1029,7 +1081,7 @@ export class TrailApp {
       ["D", "Open the selected diff in a pager: delta in delta mode, Git's pager otherwise"],
       ["Esc", "Return to the file history, or clear the search"],
       ["p", "Switch between the commit timeline and the PR timeline"],
-      ["f", "Choose a PR to filter the files, or choose All PRs"],
+      ["f", "Choose a PR to filter the files, or choose All PRs. Type a PR number or title words to narrow the list"],
       ["o", "Open the selected PR in tuicr"],
       ["O", "Open the selected commit in tuicr"],
       ["/", "Search file paths"],
