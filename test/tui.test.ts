@@ -13,9 +13,9 @@ beforeAll(async () => {
   repo = await FixtureRepo.create();
   await repo.commit("initial", { "R/clean.R": numberedFile(12) });
   await repo.checkout("feat-1", "main");
-  await repo.commit("add coverage", { "R/clean.R": numberedFile(12, { 6: "  nrow(data)" }) });
+  await repo.commit("add coverage", { "R/clean.R": numberedFile(12, { 6: "  nrow(data)" }), "z/first-only.txt": "first PR\n" });
   await repo.checkout("feat-2", "feat-1");
-  secondCommit = await repo.commit("count distinct cases", { "R/clean.R": numberedFile(12, { 6: "  dplyr::n_distinct(data$case_id)" }) });
+  secondCommit = await repo.commit("count distinct cases", { "R/clean.R": numberedFile(12, { 6: "  dplyr::n_distinct(data$case_id)" }), "z/second-only.txt": "second PR\n" });
   await repo.checkout("main");
 });
 
@@ -23,16 +23,21 @@ afterAll(async () => {
   await repo.dispose();
 });
 
-async function startApp(overrides: Partial<AppOptions> = {}, fixture: FixtureRepo = repo) {
+async function startApp(
+  overrides: Partial<AppOptions> = {},
+  fixture: FixtureRepo = repo,
+  display: { focus?: number | null; width?: number; height?: number } = {},
+) {
   const git = await Git.open(fixture.root);
   const source = new FakeSource(fixture, [
     { number: 1, head: "feat-1", base: "main" },
     { number: 4, head: "feat-2", base: "main" },
   ]);
-  const model = await loadTrail({ git, source, request: { kind: "explicit", numbers: [1, 4], focus: 1 }, fetch: false });
+  const focus = display.focus === null ? undefined : (display.focus ?? 1);
+  const model = await loadTrail({ git, source, request: { kind: "explicit", numbers: [1, 4], focus }, fetch: false });
   const launched: string[][] = [];
   const launchEnv: (Record<string, string> | undefined)[] = [];
-  const setup = await createTestRenderer({ width: 110, height: 34 });
+  const setup = await createTestRenderer({ width: display.width ?? 110, height: display.height ?? 34 });
   const app = new TrailApp(setup.renderer, {
     model,
     git,
@@ -61,8 +66,153 @@ async function startApp(overrides: Partial<AppOptions> = {}, fixture: FixtureRep
       await Bun.sleep(10);
     }
   };
-  return { setup, launched, launchEnv, frameWith };
+  return { setup, launched, launchEnv, frameWith, model };
 }
+
+test("the PR picker filters files without hiding their changes from other PRs", async () => {
+  const { setup, frameWith } = await startApp({}, repo, { focus: null });
+  try {
+    let frame = await frameWith("Files: all PRs");
+    expect(frame).toContain("first-only.txt");
+    expect(frame).toContain("second-only.txt");
+
+    await setup.mockInput.pressKey("f");
+    frame = await frameWith("FILTER FILES BY PR");
+    expect(frame).toContain("All PRs  3 files");
+    expect(frame).toContain("#1 PR 1 from feat-1  2 files");
+    expect(frame).toContain("#4 PR 4 from feat-2  2 files");
+    await setup.mockInput.pressKey("j");
+    await setup.mockInput.pressKey("j");
+    await setup.mockInput.pressEnter();
+    frame = await frameWith("Files: PR #4");
+    expect(frame).toContain("second-only.txt");
+    expect(frame).not.toContain("first-only.txt");
+    expect(frame).toContain("Later changes:   #4");
+    await setup.mockInput.pressKey("l");
+    await frameWith("PR #4: PR 4 from feat-2");
+
+    // The picker starts at the active PR. Escape cancels without changing the filter.
+    await setup.mockInput.pressKey("f");
+    frame = await frameWith("FILTER FILES BY PR");
+    expect(frame).toContain("› ● #4");
+    await setup.mockInput.pressKey("k");
+    await setup.mockInput.pressEscape();
+    frame = await frameWith("SELECTED CHANGE");
+    expect(frame).toContain("Files: PR #4");
+    expect(frame).toContain("PR #4: PR 4 from feat-2");
+
+    await setup.mockInput.pressKey("f");
+    await setup.mockInput.pressKey("g");
+    await setup.mockInput.pressEnter();
+    frame = await frameWith("Files: all PRs");
+    expect(frame).toContain("first-only.txt");
+    expect(frame).toContain("second-only.txt");
+  } finally {
+    await setup.dispose();
+  }
+});
+
+test("the PR picker combines with path search and preserves the focus shortcut", async () => {
+  const { setup, frameWith } = await startApp();
+  try {
+    let frame = await frameWith("Files: PR #1");
+    expect(frame).not.toContain("second-only.txt");
+    await setup.mockInput.pressKey("/");
+    await setup.mockInput.typeText("second-only");
+    await setup.mockInput.pressEnter();
+    await frameWith("No file matches the search.");
+    await setup.mockInput.pressKey("f");
+    await setup.mockInput.pressArrow("down");
+    await setup.mockInput.pressEnter();
+    frame = await frameWith("Files: PR #4");
+    expect(frame).toContain("Search: second-only");
+    expect(frame).toContain("second-only.txt");
+
+    await setup.mockInput.pressEscape();
+    frame = await frameWith("2 files");
+    expect(frame).toContain("Files: PR #4");
+    expect(frame).not.toContain("Search:");
+    expect(frame).not.toContain("first-only.txt");
+    await setup.mockInput.pressKey("a");
+    frame = await frameWith("Files: PR #1");
+    expect(frame).toContain("first-only.txt");
+    expect(frame).not.toContain("second-only.txt");
+    await setup.mockInput.pressKey("a");
+    await frameWith("Files: all PRs");
+  } finally {
+    await setup.dispose();
+  }
+});
+
+test("clicking the file filter opens the picker and clicking a PR applies it", async () => {
+  const { setup, frameWith } = await startApp({}, repo, { focus: null, width: 80, height: 24 });
+  try {
+    let frame = await frameWith("Files: all PRs");
+    const filterRow = frame.split("\n").findIndex((line) => line.includes("Files: all PRs"));
+    await setup.mockMouse.click(5, filterRow);
+    frame = await frameWith("FILTER FILES BY PR");
+    const rows = frame.split("\n");
+    const prRow = rows.findIndex((line) => line.includes("#4 PR 4 from feat-2"));
+    await setup.mockMouse.click(8, prRow);
+    frame = await frameWith("Files: PR #4");
+    expect(frame).toContain("second-only.txt");
+    expect(frame).not.toContain("first-only.txt");
+
+    // The shared file remains selected when it survives a filter change.
+    expect(frame).toContain("R/clean.R");
+    const row = frame.split("\n").findIndex((line) => line.includes("Files: PR #4"));
+    await setup.mockMouse.click(5, row);
+    frame = await frameWith("FILTER FILES BY PR");
+    const allRow = frame.split("\n").findIndex((line) => line.includes("All PRs"));
+    await setup.mockMouse.click(8, allRow);
+    frame = await frameWith("Files: all PRs");
+    expect(frame).toContain("first-only.txt");
+  } finally {
+    await setup.dispose();
+  }
+});
+
+test("the PR picker scrolls to empty PRs and includes ambiguous candidate files", async () => {
+  const { setup, frameWith, model } = await startApp({}, repo, { focus: null, width: 80, height: 24 });
+  try {
+    // Context PRs do not belong in the picker. Ambiguous changes still belong to each candidate PR.
+    const pr = model.prs.get(4)!;
+    model.prs.set(99, { ...pr, number: 99, title: "Context only" });
+    const change = model.histories.find((file) => file.path === "z/second-only.txt")!.changes[0]!;
+    change.pr = null;
+    change.candidates = [4, 99];
+    for (let number = 10; number <= 30; number++) {
+      model.selected.push(number);
+      model.prs.set(number, { ...pr, number, title: `Empty PR ${number}` });
+    }
+    await setup.mockInput.pressKey("f");
+    let frame = await frameWith("FILTER FILES BY PR");
+    expect(frame).toContain("#4 PR 4 from feat-2  2 files");
+    expect(frame).not.toContain("Context only");
+    await setup.mockInput.pressKey("G", { shift: true });
+    frame = await frameWith("›   #30 Empty PR 30  0 files");
+    await setup.mockInput.pressKey("\x1b[5~");
+    await frameWith("›   #11 Empty PR 11  0 files");
+    await setup.mockInput.pressKey("\x1b[6~");
+    frame = await frameWith("›   #30 Empty PR 30  0 files");
+    const rows = frame.split("\n");
+    const row = rows.findIndex((line) => line.includes("#30 Empty PR 30"));
+    await setup.mockMouse.click(8, row);
+    frame = await frameWith("No files match the PR filter.");
+    expect(frame).toContain("Files: PR #30");
+
+    await setup.mockInput.pressKey("f");
+    await setup.mockInput.pressKey("g");
+    await setup.mockInput.pressArrow("down");
+    await setup.mockInput.pressArrow("down");
+    await setup.mockInput.pressEnter();
+    frame = await frameWith("Files: PR #4");
+    expect(frame).toContain("second-only.txt");
+    expect(frame).not.toContain("first-only.txt");
+  } finally {
+    await setup.dispose();
+  }
+});
 
 test("the interface shows the file timeline and moves between changes", async () => {
   const { setup, launched, frameWith } = await startApp();
