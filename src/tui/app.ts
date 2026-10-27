@@ -48,7 +48,7 @@ interface Entry {
   lane: number;
 }
 
-type View = "history" | "diff" | "help";
+type View = "history" | "diff" | "help" | "pr-picker";
 type FileRow = { kind: "dir"; text: string } | { kind: "file"; index: number };
 
 const HEADER_HEIGHT = 2;
@@ -75,8 +75,10 @@ export class TrailApp {
   private query = "";
   private status = "";
   private lastReport: string | null = null;
-  /** In focus mode, list only files that the focus PR changes. */
-  private focusOnly: boolean;
+  /** List only files changed by this PR, or every loaded PR when null. */
+  private filePr: number | null;
+  private pickerIndex = 0;
+  private pickerScroll = 0;
   private readonly patches = new Map<string, Promise<string>>();
   private readonly rendered = new Map<string, Promise<RenderedDiff>>();
   /** Revealed hidden lines per entry and view, keyed by `viewKey`. */
@@ -105,7 +107,7 @@ export class TrailApp {
     private readonly renderer: CliRenderer,
     private readonly options: AppOptions,
   ) {
-    this.focusOnly = options.model.focus !== null;
+    this.filePr = options.model.focus;
     this.diffRenderer = options.diffRenderer ?? "pierre";
     this.files = this.filteredFiles();
     const root = new BoxRenderable(renderer, { id: "root", flexDirection: "column", width: "100%", height: "100%" });
@@ -133,6 +135,11 @@ export class TrailApp {
     this.detailBox.onMouseDown = (event) => this.handleDetailClick(event.x, event.y);
     this.detailBox.onMouseScroll = (event) => this.handleDetailScroll(event.scroll?.direction);
     this.filesBox.onMouseDown = (event) => this.handleFilesClick(event.y);
+    this.header.onMouseDown = (event) => {
+      if (this.view === "history" && event.y - this.header.screenY === 1 && event.x - this.header.screenX < this.fileFilterLabel().length) {
+        this.openPrPicker();
+      }
+    };
 
     renderer.on("resize", () => this.render());
     this.render();
@@ -174,6 +181,7 @@ export class TrailApp {
       return this.render();
     }
     if (this.view === "diff") return this.handleDiffKey(key);
+    if (this.view === "pr-picker") return this.handlePrPickerKey(key);
 
     this.status = "";
     const char = printable(key);
@@ -195,10 +203,9 @@ export class TrailApp {
       this.entryIndex.clear();
       this.status = this.prMode ? "Timeline shows one node per pull request." : "Timeline shows one node per commit.";
     } else if (char === "a" && this.options.model.focus !== null) {
-      this.focusOnly = !this.focusOnly;
-      this.applyQuery(this.query);
-      this.status = this.focusOnly ? `Showing files that PR #${this.options.model.focus} changes.` : "Showing files from every loaded PR.";
-    } else if (char === "/") this.searching = true;
+      this.applyPrFilter(this.filePr === this.options.model.focus ? null : this.options.model.focus);
+    } else if (char === "f") return this.openPrPicker();
+    else if (char === "/") this.searching = true;
     else if (char === "o") void this.openTuicr(false);
     else if (char === "O") void this.openTuicr(true);
     else if (char === "r") void this.writeReport(false);
@@ -212,6 +219,46 @@ export class TrailApp {
     else if (char === "?") this.view = "help";
     else return;
     this.render();
+  }
+
+  private openPrPicker(): void {
+    this.searching = false;
+    this.view = "pr-picker";
+    this.pickerIndex = this.filePr === null ? 0 : this.options.model.selected.indexOf(this.filePr) + 1;
+    this.pickerScroll = 0;
+    this.status = "";
+    this.render();
+  }
+
+  private handlePrPickerKey(key: KeyEvent): void {
+    const char = printable(key);
+    const page = Math.max(1, this.layout().detailInner.height);
+    if (key.name === "escape" || char === "f") this.view = "history";
+    else if (key.name === "return") return this.selectPickerPr();
+    else if (key.name === "down" || char === "j") this.movePicker(1);
+    else if (key.name === "up" || char === "k") this.movePicker(-1);
+    else if (char === "g") this.movePicker(-this.options.model.selected.length - 1);
+    else if (char === "G") this.movePicker(this.options.model.selected.length + 1);
+    else if (key.name === "pagedown") this.movePicker(page);
+    else if (key.name === "pageup") this.movePicker(-page);
+    else return;
+    this.render();
+  }
+
+  private movePicker(delta: number): void {
+    this.pickerIndex = Math.max(0, Math.min(this.options.model.selected.length, this.pickerIndex + delta));
+  }
+
+  private selectPickerPr(): void {
+    this.applyPrFilter(this.pickerIndex === 0 ? null : this.options.model.selected[this.pickerIndex - 1]!);
+    this.view = "history";
+    this.render();
+  }
+
+  private applyPrFilter(pr: number | null): void {
+    this.filePr = pr;
+    this.applyQuery(this.query);
+    this.status = pr === null ? "Showing files from every loaded PR." : `Showing files that PR #${pr} changes.`;
   }
 
   private handleSearchKey(key: KeyEvent): void {
@@ -349,6 +396,15 @@ export class TrailApp {
    * In the change panel, a click on a commit label selects that change, and a click elsewhere opens the diff view.
    */
   private handleDetailClick(screenX: number, screenY: number): void {
+    if (this.view === "pr-picker") {
+      const row = screenY - this.detailText.screenY;
+      const index = row + this.pickerScroll;
+      if (row >= 0 && row < this.layout().detailInner.height && index <= this.options.model.selected.length) {
+        this.pickerIndex = index;
+        this.selectPickerPr();
+      }
+      return;
+    }
     const current = this.currentEntry();
     if (!current || this.view === "help") return;
     const row = screenY - this.detailText.screenY;
@@ -369,7 +425,8 @@ export class TrailApp {
   private handleDetailScroll(direction: string | undefined): void {
     const delta = direction === "down" ? 3 : direction === "up" ? -3 : 0;
     if (delta === 0) return;
-    if (this.view === "diff") this.diffScroll = Math.max(0, this.diffScroll + delta);
+    if (this.view === "pr-picker") this.movePicker(delta);
+    else if (this.view === "diff") this.diffScroll = Math.max(0, this.diffScroll + delta);
     else if (this.view === "history") this.previewScroll = Math.max(0, this.previewScroll + delta);
     else return;
     this.render();
@@ -385,10 +442,10 @@ export class TrailApp {
 
   private filteredFiles(): FileHistory[] {
     const needle = this.query.toLowerCase();
-    const focus = this.options.model.focus;
+    const pr = this.filePr;
     return this.options.model.histories.filter(
       (history) =>
-        (!this.focusOnly || focus === null || history.changes.some((change) => changeBelongsTo(change, focus))) &&
+        (pr === null || history.changes.some((change) => changeBelongsTo(change, pr))) &&
         history.paths.some((path) => path.toLowerCase().includes(needle)),
     );
   }
@@ -596,11 +653,17 @@ export class TrailApp {
       this.detailText.content = toStyled(this.helpLines().map((line) => fit(line, layout.detailInner.width)));
       return;
     }
+    if (this.view === "pr-picker") {
+      this.detailBox.title = " FILTER FILES BY PR ";
+      this.detailText.content = toStyled(this.pickerLines(layout.detailInner.width, layout.detailInner.height));
+      return;
+    }
 
     this.filesText.content = toStyled(this.fileLines(layout.filesInner.width, layout.filesInner.height));
     const current = this.currentEntry();
     if (!current) {
-      this.historyText.content = toStyled([[span(this.query ? "No file matches the search." : "The selected pull requests change no files.", { fg: theme.muted })]]);
+      this.historyText.content = toStyled([[span(this.query ? "No file matches the search." : "No files match the PR filter. Press f to choose another PR.", { fg: theme.muted })]]);
+      this.detailBox.title = " SELECTED CHANGE ";
       this.detailText.content = toStyled([]);
       return;
     }
@@ -656,24 +719,51 @@ export class TrailApp {
       span(`  Branch: ${model.branch ?? "(detached)"}`, { fg: theme.muted }),
     ];
     const second: Line = [
-      span(` PRs: ${formatNumbers(model.selected) || "none"}`, { fg: theme.text }),
+      span(this.fileFilterLabel(), { fg: theme.accent, underline: true }),
+      span(" (f)", { fg: theme.muted }),
       span(`  ${this.files.length} file${this.files.length === 1 ? "" : "s"}`, { fg: theme.muted }),
+      span(this.query ? `  Search: ${this.query}` : "", { fg: theme.muted }),
       span(`  Timeline: ${this.prMode ? "pull requests" : "commits"}`, { fg: theme.muted }),
+      span(`  PRs: ${formatNumbers(model.selected) || "none"}`, { fg: theme.text }),
     ];
     if (model.focus !== null) {
       second.push(span(`  Focus: #${model.focus}`, { fg: theme.pr }));
-      second.push(span(this.focusOnly ? "  Files: focus PR (a: all)" : "  Files: all PRs (a: focus PR)", { fg: theme.muted }));
     }
     if (notes > 0) second.push(span(`  ${notes} note${notes === 1 ? "" : "s"} (press ?)`, { fg: theme.warning }));
     return [fit(first, this.width), fit(second, this.width)];
   }
 
+  private fileFilterLabel(): string {
+    return ` Files: ${this.filePr === null ? "all PRs" : `PR #${this.filePr}`} ▾`;
+  }
+
   private footerLine(): Line {
+    if (this.view === "pr-picker") return [span(" j/k ↑/↓ Select  PgUp/PgDn Page  Enter Filter  Esc Cancel  q Quit", { fg: theme.muted })];
     if (this.searching) return [span(" Search: ", { fg: theme.accent }), span(this.query + "▏"), span("   Enter keep  Esc clear", { fg: theme.muted })];
     if (this.status) return [span(` ${this.status}`, { fg: theme.warning })];
     if (this.view === "diff") return [span(" j/k Scroll  d/u Page  h/l Change  e/E Expand  t Renderer  D Pager  o tuicr PR  O tuicr commit  Esc Back  q Quit", { fg: theme.muted })];
-    const hints = " j/k Files  h/l Timeline  Enter Diff  J/K Preview  e/E Expand  p PR/commit  o tuicr  / Search  r Report  y Copy  ? Help  q Quit";
+    const hints = " j/k Files  h/l Timeline  Enter Diff  f PR filter  / Search  J/K Preview  e/E Expand  p PR/commit  o tuicr  r Report  y Copy  ? Help  q Quit";
     return [span(hints + (this.query ? `   [filter: ${this.query}]` : ""), { fg: theme.muted })];
+  }
+
+  private pickerLines(width: number, height: number): Line[] {
+    const choices = [null, ...this.options.model.selected];
+    if (this.pickerIndex < this.pickerScroll) this.pickerScroll = this.pickerIndex;
+    if (this.pickerIndex >= this.pickerScroll + height) this.pickerScroll = this.pickerIndex - height + 1;
+    return choices.slice(this.pickerScroll, this.pickerScroll + height).map((pr, offset) => {
+      const selected = this.pickerScroll + offset === this.pickerIndex;
+      const style = selected ? { bg: theme.selectionBg } : {};
+      const count = pr === null ? this.options.model.histories.length : this.options.model.histories.filter(
+        (file) => file.changes.some((change) => changeBelongsTo(change, pr)),
+      ).length;
+      const title = pr === null ? "All PRs" : `#${pr} ${this.options.model.prs.get(pr)?.title ?? ""}`;
+      return fit([
+        span(selected ? "› " : "  ", { ...style, fg: theme.accent }),
+        span(pr === this.filePr ? "● " : "  ", { ...style, fg: theme.accent }),
+        span(`${title}  `, { ...style, bold: selected }),
+        span(`${count} file${count === 1 ? "" : "s"}`, { ...style, fg: theme.muted }),
+      ], width, style);
+    });
   }
 
   private fileRows(): FileRow[] {
@@ -939,6 +1029,7 @@ export class TrailApp {
       ["D", "Open the selected diff in a pager: delta in delta mode, Git's pager otherwise"],
       ["Esc", "Return to the file history, or clear the search"],
       ["p", "Switch between the commit timeline and the PR timeline"],
+      ["f", "Choose a PR to filter the files, or choose All PRs"],
       ["o", "Open the selected PR in tuicr"],
       ["O", "Open the selected commit in tuicr"],
       ["/", "Search file paths"],
