@@ -100,8 +100,11 @@ With one PR number, commit-trail runs in focus mode. The file list shows only th
 The picker lists the loaded PRs with their titles and file counts.
 
 1. Press `f` to open the picker.
-2. Use `j`/`k` or the arrow keys to select a PR or `All PRs`.
-3. Press `Enter` to apply the filter.
+2. Optional: type a PR number or words from a title to narrow the list.
+3. Use the arrow keys to select a PR or `All PRs`.
+4. Press `Enter` to apply the filter.
+
+The picker lists a PR only if its number and title contain every typed word, ignoring case. `Backspace` deletes the last typed character, and `Ctrl-U` clears the typed text. `Ctrl-N` and `Ctrl-P` move the selection down and up. `PgUp` and `PgDn` move it one page, and `Home` and `End` move it to the first and last row. In the picker, letters are filter text, so `q` does not quit. Press `Ctrl-C` to quit.
 
 The `Esc` key cancels the selection. The `All PRs` option removes the PR filter. The PR filter combines with the path search. Each matching file keeps its full timeline across all loaded PRs.
 
@@ -119,7 +122,7 @@ The `Esc` key cancels the selection. The `All PRs` option removes the PR filter.
 | `D` | Open the selected diff in a pager: delta in delta mode, Git's pager otherwise |
 | `Esc` | Return to the file history, or clear the search |
 | `p` | Switch between the commit timeline and the PR timeline |
-| `f` | Choose a PR to filter the files, or choose `All PRs` |
+| `f` | Choose a PR to filter the files, or choose `All PRs`. Type to narrow the list |
 | `a` | In focus mode, switch between the focus PR's files and all files |
 | `o` | Open the selected change's PR in tuicr (`tuicr pr <number>`) |
 | `O` | Open the selected commit in tuicr, limited to the file |
